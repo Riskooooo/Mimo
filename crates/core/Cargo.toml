@@ -1,0 +1,12 @@
+[package]
+name = "mimo-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Mimo core engine: system analysis and automation logic, independent of any UI."
+
+[dependencies]
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

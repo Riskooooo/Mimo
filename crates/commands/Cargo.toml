@@ -1,0 +1,12 @@
+[package]
+name = "mimo-commands"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Tauri command bridge between the Mimo core engine and the desktop shell."
+
+[dependencies]
+mimo-core = { path = "../core" }
+tauri = { version = "2" }
+serde = { version = "1", features = ["derive"] }

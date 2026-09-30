@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mimo</title>
+  <meta name="description" content="Mimo is a desktop companion for Windows, inspired by the iOS Dynamic Island." />
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #0b0b0e;
+      color: #f5f5f7;
+      font-family: -apple-system, "SF Pro Display", "Segoe UI", Inter, sans-serif;
+    }
+
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    main {
+      width: 100%;
+      max-width: 620px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.45rem 1rem;
+      border-radius: 999px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.02) 38%),
+        linear-gradient(160deg, rgba(46, 46, 54, 0.78), rgba(10, 10, 14, 0.88));
+      box-shadow:
+        0 1px 0 rgba(255, 255, 255, 0.1) inset,
+        0 0 0 1px rgba(255, 255, 255, 0.07) inset,
+        0 4px 14px rgba(0, 0, 0, 0.32);
+      font-size: 0.85rem;
+      font-weight: 590;
+      margin-bottom: 2rem;
+    }
+
+    .pill .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #32d74b;
+      box-shadow: 0 0 8px rgba(50, 215, 75, 0.7);
+    }
+
+    h1 {
+      font-size: 2.4rem;
+      font-weight: 650;
+      margin: 0 0 0.5rem;
+      letter-spacing: -0.01em;
+    }
+
+    .tagline {
+      font-size: 1.05rem;
+      color: rgba(245, 245, 247, 0.72);
+      margin: 0 0 2rem;
+      line-height: 1.5;
+    }
+
+    .status {
+      display: inline-block;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      color: #ffd60a;
+      background: rgba(255, 214, 10, 0.12);
+      border: 1px solid rgba(255, 214, 10, 0.3);
+      border-radius: 6px;
+      padding: 0.2rem 0.55rem;
+      margin-bottom: 1.75rem;
+    }
+
+    p {
+      line-height: 1.65;
+      color: rgba(245, 245, 247, 0.82);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      margin: 2rem 0;
+    }
+
+    .card {
+      border-radius: 14px;
+      padding: 1.1rem 1.25rem;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .card h2 {
+      font-size: 0.95rem;
+      margin: 0 0 0.4rem;
+      font-weight: 600;
+    }
+
+    .card p {
+      font-size: 0.88rem;
+      margin: 0;
+      color: rgba(245, 245, 247, 0.65);
+    }
+
+    footer {
+      margin-top: 2.5rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      font-size: 0.85rem;
+      color: rgba(245, 245, 247, 0.55);
+    }
+
+    a {
+      color: #f5f5f7;
+    }
+
+    a:hover {
+      color: #32d74b;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="pill"><span class="dot"></span> Mimo</div>
+
+    <div class="status">In development</div>
+
+    <h1>Mimo</h1>
+    <p class="tagline">
+      A desktop companion for Windows, living in a small floating pill at the
+      top of the screen — inspired by the iOS Dynamic Island.
+    </p>
+
+    <p>
+      Mimo is designed to analyze what's happening on the computer and
+      surface suggestions or automate small tasks for the user. The project
+      is being built from the ground up with a focus on performance,
+      security, and long-term maintainability — it should never be the kind
+      of background companion that slows a machine down.
+    </p>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Status</h2>
+        <p>Early development. The desktop shell and interaction model come first; system analysis and automation features are not built yet.</p>
+      </div>
+      <div class="card">
+        <h2>Platform</h2>
+        <p>Windows only, for now.</p>
+      </div>
+      <div class="card">
+        <h2>Stack</h2>
+        <p>Tauri 2 (Rust) for the native shell, Svelte and TypeScript for the interface.</p>
+      </div>
+      <div class="card">
+        <h2>Privacy</h2>
+        <p>Local-first by design. No telemetry.</p>
+      </div>
+    </div>
+
+    <footer>
+      <a href="https://github.com/Riskooooo/Mimo">Source on GitHub</a>
+    </footer>
+  </main>
+</body>
+</html>
