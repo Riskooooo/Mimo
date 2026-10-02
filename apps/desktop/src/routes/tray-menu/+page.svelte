@@ -3,10 +3,29 @@
   import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
 
+  type Language = "en" | "fr";
+  const TEXT = {
+    en: { settings: "Settings", close: "Close Mimo" },
+    fr: { settings: "Réglages", close: "Fermer Mimo" },
+  };
+
   let visible = $state(false);
+  let language = $state<Language>("en");
+  const t = $derived(TEXT[language] ?? TEXT.en);
+
+  function loadLanguage() {
+    void invoke<{ language: Language }>("get_settings").then((settings) => {
+      language = settings.language;
+    });
+  }
 
   onMount(() => {
+    loadLanguage();
+    const unlistenSettings = listen<{ language: Language }>("mimo://settings-changed", (event) => {
+      language = event.payload.language;
+    });
     const unlisten = listen("mimo://tray-menu-open", () => {
+      loadLanguage();
       // Reset then re-trigger so re-opening after a quick close still
       // replays the entrance animation instead of just staying visible.
       visible = false;
@@ -19,6 +38,7 @@
 
     return () => {
       void unlisten.then((fn) => fn());
+      void unlistenSettings.then((fn) => fn());
     };
   });
 
@@ -39,14 +59,14 @@
       <line x1="1" y1="9" x2="11" y2="9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
       <circle cx="8" cy="9" r="1.3" fill="currentColor" />
     </svg>
-    <span>Settings</span>
+    <span>{t.settings}</span>
   </button>
   <button class="menu-item menu-item-close" type="button" onclick={handleClose}>
     <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
       <line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
       <line x1="10" y1="2" x2="2" y2="10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
     </svg>
-    <span>Close Mimo</span>
+    <span>{t.close}</span>
   </button>
 </main>
 

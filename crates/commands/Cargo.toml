@@ -9,4 +9,8 @@ description = "Tauri command bridge between the Mimo core engine and the desktop
 [dependencies]
 mimo-core = { path = "../core" }
 tauri = { version = "2" }
+tauri-plugin-opener = "2"
+chrono = "0.4"
+serde_json = "1"
+ureq = "3"
 serde = { version = "1", features = ["derive"] }

@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.fabian.mimo",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run setup:voice && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run setup:voice && npm run build",
     "frontendDist": "../build"
   },
   "app": {
@@ -41,6 +41,23 @@
         "shadow": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
+        "visible": false
+      },
+      {
+        "label": "panel",
+        "title": "Mimo",
+        "url": "/panel",
+        "width": 460,
+        "height": 680,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": true,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "center": true,
         "visible": false
       }
     ],

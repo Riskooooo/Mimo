@@ -12,10 +12,11 @@
 //! commands declared outside the app crate's `lib.rs`.
 
 pub mod commands;
+mod info;
 
 use std::sync::Mutex;
 
-pub use commands::{engine_status, EngineStatusDto};
+pub use commands::{engine_status, execute, interpret, AskResponseDto, EngineStatusDto};
 
 /// Builds the shared engine state for the shell to hand to `app.manage(...)`.
 ///

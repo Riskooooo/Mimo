@@ -3,12 +3,55 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::CoreError;
+use crate::shortcut::DEFAULT_SUMMON_SHORTCUT;
+
+/// Languages Mimo is available in — for its text and replies, and the
+/// speech model it listens with (`resources/vosk/models/<code>`).
+/// The first one is the default.
+pub const LANGUAGES: &[&str] = &["en", "fr"];
+
 /// User-configurable preferences, persisted as JSON in the app's local data
 /// directory. Kept as a plain, `serde`-only data type (no Tauri dependency)
 /// so it can be loaded/saved from any context that can resolve a path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+///
+/// `#[serde(default)]` lets a settings file written by an older version
+/// (missing newer fields) still load, with the new fields at their defaults.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     pub launch_at_startup: bool,
+    /// Global accelerator that brings the pill up in typing mode.
+    pub summon_shortcut: String,
+    /// Whether Mimo listens for "Hey Mimo" in the background.
+    pub voice_wake_enabled: bool,
+    /// The app's language, one of [`LANGUAGES`]: interface, replies and
+    /// the speech model all follow it. (Was `voice_language` before it
+    /// covered more than voice; older settings files still load.)
+    #[serde(alias = "voice_language")]
+    pub language: String,
+    /// Short UI sounds (wake chime, success/error) on or off.
+    pub sounds_enabled: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            launch_at_startup: false,
+            summon_shortcut: DEFAULT_SUMMON_SHORTCUT.to_string(),
+            voice_wake_enabled: false,
+            language: LANGUAGES[0].to_string(),
+            sounds_enabled: true,
+        }
+    }
+}
+
+pub fn validate_language(language: &str) -> Result<(), CoreError> {
+    if LANGUAGES.contains(&language) {
+        Ok(())
+    } else {
+        Err(CoreError::UnsupportedLanguage(language.to_string()))
+    }
 }
 
 impl Settings {
@@ -29,5 +72,33 @@ impl Settings {
         let json = serde_json::to_string_pretty(self)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
         std::fs::write(path, json)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn older_settings_files_still_load() {
+        let settings: Settings = serde_json::from_str(r#"{ "launch_at_startup": true }"#).unwrap();
+        assert!(settings.launch_at_startup);
+        assert_eq!(settings.summon_shortcut, DEFAULT_SUMMON_SHORTCUT);
+        assert!(!settings.voice_wake_enabled);
+        assert_eq!(settings.language, "en");
+        assert!(settings.sounds_enabled);
+    }
+
+    #[test]
+    fn only_shipped_languages_are_valid() {
+        assert!(validate_language("fr").is_ok());
+        assert!(validate_language("en").is_ok());
+        assert!(validate_language("de").is_err());
+    }
+
+    #[test]
+    fn language_saved_under_its_old_name_still_loads() {
+        let settings: Settings = serde_json::from_str(r#"{ "voice_language": "fr" }"#).unwrap();
+        assert_eq!(settings.language, "fr");
     }
 }

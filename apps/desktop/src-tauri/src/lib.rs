@@ -1,8 +1,22 @@
+mod apps;
 mod commands;
+mod diagnostics;
+mod notifications;
+mod panel;
+mod reminders;
+mod sounds;
+mod speech;
+mod tasks;
+mod translate;
+mod voice;
 
 use std::sync::Mutex;
 
-use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+
+use crate::sounds::{Sound, Sounds};
+use crate::voice::VoiceWake;
 
 /// Horizontal margin (in CSS px, matched by `.pill.full`'s `calc(100% - …)`)
 /// left around the pill inside the window so its blur/shadow isn't clipped.
@@ -21,7 +35,7 @@ const TOP_OFFSET: f64 = 14.0;
 
 /// Extra window height (logical px) given to the settings drawer when open —
 /// matched by `.settings-panel.open`'s height in the frontend.
-pub(crate) const SETTINGS_PANEL_HEIGHT: f64 = 140.0;
+pub(crate) const SETTINGS_PANEL_HEIGHT: f64 = 264.0;
 
 /// Gap (physical px) between the tray-menu popup and the tray icon it opened from.
 const TRAY_MENU_GAP: i32 = 8;
@@ -34,8 +48,29 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![]),
         ))
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        summon(app, "shortcut");
+                    }
+                })
+                .build(),
+        )
         .invoke_handler(tauri::generate_handler![
             mimo_commands::engine_status,
+            commands::ask_mimo,
+            commands::get_panel_content,
+            commands::close_panel,
+            commands::refresh_diagnostic,
+            commands::remove_reminder,
+            commands::stop_speaking,
+            commands::complete_task,
+            commands::add_task_text,
+            commands::translate_clipboard,
+            commands::cancel_translation,
+            commands::copy_text,
+            commands::set_pill_drawer,
             commands::hide_window,
             commands::quit_app,
             commands::get_settings,
@@ -43,6 +78,11 @@ pub fn run() {
             commands::erase_memory,
             commands::set_settings_panel_open,
             commands::open_settings_from_tray,
+            commands::set_summon_shortcut,
+            commands::set_voice_wake_enabled,
+            commands::set_language,
+            commands::set_sounds_enabled,
+            commands::play_sound,
         ])
         .setup(|app| {
             app.manage(mimo_commands::init_engine_state());
@@ -50,6 +90,30 @@ pub fn run() {
             let settings = commands::settings_path(app.handle())
                 .map(|path| mimo_core::Settings::load(&path))
                 .unwrap_or_default();
+
+            // A shortcut another app already owns shouldn't stop Mimo from
+            // starting — it just stays unbound until changed in settings.
+            if let Err(err) = app.global_shortcut().register(settings.summon_shortcut.as_str()) {
+                eprintln!("could not register summon shortcut {:?}: {err}", settings.summon_shortcut);
+            }
+
+            app.state::<Mutex<mimo_core::Engine>>()
+                .lock()
+                .expect("engine mutex poisoned")
+                .set_language(mimo_core::Lang::from_code(&settings.language));
+            let voice = VoiceWake::new(voice_assets_dir(app.handle()), &settings.language);
+            if settings.voice_wake_enabled {
+                voice.set_enabled(app.handle(), true);
+            }
+            app.manage(voice);
+            app.manage(Sounds::new());
+            app.manage(speech::Speech::default());
+            app.manage(panel::Panel::default());
+            let reminders = reminders::Reminders::load(app.handle());
+            reminders.start(app.handle().clone());
+            app.manage(reminders);
+            app.manage(tasks::Tasks::load(app.handle()));
+            apps::keep_catalog_current(app.handle().clone());
             app.manage(Mutex::new(settings));
 
             if let Some(window) = app.get_webview_window("main") {
@@ -72,6 +136,48 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Where the Vosk runtime and speech models live: bundled next to the app
+/// when packaged, or straight from the source tree in dev builds (where
+/// `scripts/fetch-voice-models.ps1` downloads them).
+fn voice_assets_dir(app: &AppHandle) -> std::path::PathBuf {
+    let bundled = app.path().resource_dir().ok().map(|dir| dir.join("vosk"));
+    match bundled {
+        Some(dir) if dir.exists() || !cfg!(debug_assertions) => dir,
+        _ => std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources").join("vosk"),
+    }
+}
+
+/// Brings the pill up because the user asked for Mimo — via the global
+/// shortcut (`source = "shortcut"`, typed prompt) or "Hey Mimo"
+/// (`"voice"`, listening). The frontend picks the mode from the payload.
+pub(crate) fn summon(app: &AppHandle, source: &str) {
+    // Instant feedback that "Hey Mimo" was heard, before any animation.
+    if source == "voice" {
+        let enabled = app
+            .state::<Mutex<mimo_core::Settings>>()
+            .lock()
+            .expect("settings mutex poisoned")
+            .sounds_enabled;
+        if enabled {
+            app.state::<Sounds>().play(Sound::Wake);
+        }
+    }
+
+    if let Some(menu) = app.get_webview_window("tray-menu") {
+        let _ = menu.hide();
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        // Re-placing a visible window would snap it back to the base height
+        // under an open settings drawer; the frontend closes that itself.
+        if !window.is_visible().unwrap_or(false) {
+            place_island(&window);
+        }
+        let _ = window.show();
+        let _ = window.set_focus();
+        let _ = window.emit("mimo://summon", source);
+    }
 }
 
 /// Sizes and positions the island window relative to the primary monitor, so

@@ -1,12 +1,79 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount } from "svelte";
   import { fade } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
 
   type EngineStatus = { running: boolean };
-  type AppSettings = { launch_at_startup: boolean };
+  type AppSettings = {
+    launch_at_startup: boolean;
+    summon_shortcut: string;
+    voice_wake_enabled: boolean;
+    language: Language;
+    sounds_enabled: boolean;
+  };
+  type Language = "en" | "fr";
+
+  // Every word the pill and its settings show, per the Language setting
+  // (which also sets Mimo's replies and the language it listens in).
+  const TEXT = {
+    en: {
+      loading: "Loading…",
+      listening: "Listening…",
+      placeholder: "Ask Mimo… e.g. “open youtube”",
+      stop: "Stop",
+      translation: "Translation",
+      copy: "Copy",
+      copied: "Copied",
+      settings: "Settings",
+      minimize: "Minimize Mimo",
+      close: "Close Mimo",
+      launchAtLogin: "Launch at login",
+      shortcut: "Open Mimo shortcut",
+      changeShortcut: "Change the shortcut that opens Mimo",
+      pressKeys: "Press keys…",
+      voiceWake: "Listen for “Hey Mimo”",
+      language: "Language",
+      sounds: "Sounds",
+      eraseMemory: "Erase memory",
+    },
+    fr: {
+      loading: "Chargement…",
+      listening: "J'écoute…",
+      placeholder: "Demande à Mimo… ex. « ouvre youtube »",
+      stop: "Arrêter",
+      translation: "Traduction",
+      copy: "Copier",
+      copied: "Copié",
+      settings: "Réglages",
+      minimize: "Réduire Mimo",
+      close: "Fermer Mimo",
+      launchAtLogin: "Lancer au démarrage",
+      shortcut: "Raccourci pour ouvrir Mimo",
+      changeShortcut: "Changer le raccourci qui ouvre Mimo",
+      pressKeys: "Appuie sur une touche…",
+      voiceWake: "Écouter « Hey Mimo »",
+      language: "Langue",
+      sounds: "Sons",
+      eraseMemory: "Effacer la mémoire",
+    },
+  };
+  type Translation = { original: string; translated: string; from: string; to: string };
+  type AskResponse = {
+    ok: boolean;
+    reply: string;
+    answer: boolean;
+    translation: Translation | null;
+    awaiting_copy: boolean;
+  };
+  type VoiceResult = { text: string | null; error: string | null };
+  // "reminder": brought up by a due reminder/alarm (mode comes with the
+  // separate mimo://ringing event).
+  type SummonSource = "shortcut" | "voice" | "reminder";
+  type SoundName = "wake" | "success" | "error" | "reminder" | "alarm";
+  type Ringing = { kind: "reminder" | "alarm"; message: string | null; time: string };
 
   // The pill grows in two hops, like the real Dynamic Island: a small
   // "compact" size while loading, then a wider "full" size once ready.
@@ -34,10 +101,39 @@
   // duration below.
   const SETTINGS_TRANSITION_MS = 400;
 
+  // Mimo lives in the background: once shown without being asked for
+  // anything, the pill tucks itself away after this much inactivity.
+  const IDLE_HIDE_MS = 1500;
+
+  // Typed prompt left untouched (e.g. Windows refused to give it focus, so
+  // no blur will ever come to dismiss it).
+  const PROMPT_IDLE_HIDE_MS = 10000;
+
+  // An alarm rings (sound repeated) until dismissed, giving up after a few
+  // minutes; a reminder chimes once and stays up a while.
+  const ALARM_REPEAT_MS = 2400;
+  const ALARM_GIVE_UP_MS = 3 * 60 * 1000;
+  const REMINDER_LINGER_MS = 30 * 1000;
+
+  // How long Mimo's reply stays readable before the pill tucks away —
+  // longer for an actual answer (time, weather) than for "Opening…".
+  const REPLY_LINGER_MS = 1800;
+  const ANSWER_LINGER_MS = 6000;
+
+  // The translation card under the bar (window grows by this much — see
+  // set_pill_drawer), and how long it stays when not hovered.
+  const TRANSLATION_DRAWER_HEIGHT = 170;
+  const TRANSLATION_LINGER_MS = 20000;
+
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
   type Stage = "collapsed" | "compact" | "full";
   type Phase = "loading" | "ready" | "closing";
+  // What the ready pill is doing: plain status bar, typed prompt, waiting
+  // for a spoken request, running a request, or showing the reply.
+  // "copywait": waiting for the user to copy text to translate;
+  // "translation": the translation card is open.
+  type Mode = "idle" | "input" | "listening" | "thinking" | "reply" | "ringing" | "copywait" | "translation";
 
   let stage = $state<Stage>("collapsed");
   let phase = $state<Phase>("loading");
@@ -45,7 +141,71 @@
   let contentVisible = $state(false);
   let showControls = $state(false);
   let settingsOpen = $state(false);
-  let settings = $state<AppSettings>({ launch_at_startup: false });
+  let settings = $state<AppSettings>({
+    launch_at_startup: false,
+    summon_shortcut: "F9",
+    voice_wake_enabled: false,
+    language: "en",
+    sounds_enabled: true,
+  });
+
+  const t = $derived(TEXT[settings.language] ?? TEXT.en);
+
+  let mode = $state<Mode>("idle");
+  let request = $state("");
+  let reply = $state("");
+  let replyOk = $state(true);
+  let promptInput = $state<HTMLInputElement>();
+  let capturingShortcut = $state(false);
+  let shortcutError = $state("");
+  let voiceError = $state("");
+  let ringing = $state<Ringing | null>(null);
+  let ringTimers: ReturnType<typeof setTimeout>[] = [];
+  let translation = $state<Translation | null>(null);
+  let drawerOpen = $state(false);
+  let copied = $state(false);
+  let translationTimer: ReturnType<typeof setTimeout> | undefined;
+
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let pointerInside = false;
+  let minimizing: Promise<void> | null = null;
+  let pendingSummon: SummonSource | null = null;
+  let lastSource: SummonSource = "shortcut";
+
+  // Played natively by the shell (which also checks the Sounds setting).
+  function sound(name: SoundName) {
+    void invoke("play_sound", { sound: name });
+  }
+
+  function cancelIdleHide() {
+    clearTimeout(idleTimer);
+    idleTimer = undefined;
+  }
+
+  // Re-armed whenever the pill is left alone: after a reveal, when the
+  // pointer leaves it, when settings close, or while the prompt sits idle.
+  function armIdleHide() {
+    cancelIdleHide();
+    if (phase !== "ready" || settingsOpen || pointerInside || capturingShortcut) return;
+    if (mode === "idle") {
+      idleTimer = setTimeout(() => void handleMinimize(), IDLE_HIDE_MS);
+    } else if (mode === "input") {
+      idleTimer = setTimeout(() => void handleMinimize(), PROMPT_IDLE_HIDE_MS);
+    }
+  }
+
+  function handlePointerEnter() {
+    pointerInside = true;
+    if (mode === "idle") cancelIdleHide();
+    // Reading the translation: keep it up.
+    if (mode === "translation") clearTimeout(translationTimer);
+  }
+
+  function handlePointerLeave() {
+    pointerInside = false;
+    if (mode === "idle") armIdleHide();
+    if (mode === "translation") armTranslationHide();
+  }
 
   async function playInitialReveal() {
     const start = performance.now();
@@ -73,8 +233,17 @@
     phase = "ready";
     stage = "full";
 
+    if (pendingSummon) {
+      const source = pendingSummon;
+      pendingSummon = null;
+      enterMode(source);
+      return;
+    }
+
     setTimeout(() => {
+      if (mode !== "idle") return;
       showControls = true;
+      armIdleHide();
     }, CONTROLS_REVEAL_DELAY_MS);
   }
 
@@ -91,12 +260,247 @@
     });
   }
 
+  // The shell has just shown + focused the window (whether it was hidden
+  // or already up) and asks for a mode based on how Mimo was summoned.
+  async function summon(source: SummonSource) {
+    cancelIdleHide();
+    if (source === "reminder") {
+      // Just make sure the pill is up; startRinging sets the content.
+      if (minimizing) await minimizing;
+      await closeSettings();
+      if (stage !== "full") playQuickReveal();
+      return;
+    }
+    if (phase === "loading") {
+      pendingSummon = source;
+      return;
+    }
+    if (minimizing) await minimizing;
+    if (mode === "copywait") void invoke("cancel_translation");
+    await closeSettings();
+    await closeDrawer();
+    translation = null;
+    if (stage !== "full") playQuickReveal();
+    enterMode(source);
+  }
+
+  function enterMode(source: SummonSource) {
+    lastSource = source;
+    showControls = false;
+    reply = "";
+    if (source === "shortcut") {
+      // A fresh prompt every time (it may still hold the last request if
+      // summoned again while its reply was showing).
+      request = "";
+      mode = "input";
+      focusPrompt();
+      armIdleHide();
+    } else {
+      mode = "listening";
+    }
+  }
+
+  function focusPrompt() {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => promptInput?.focus());
+    });
+  }
+
+  async function submitRequest(text: string) {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      void handleMinimize();
+      return;
+    }
+
+    cancelIdleHide();
+    mode = "thinking";
+    reply = trimmed;
+    let ok = false;
+    let answer = false;
+    try {
+      const response = await invoke<AskResponse>("ask_mimo", {
+        request: trimmed,
+        spoken: lastSource === "voice",
+      });
+      reply = response.reply;
+      ok = response.ok;
+      answer = response.answer;
+      if (response.translation) {
+        await showTranslation(response.translation);
+        return;
+      }
+      if (response.awaiting_copy) {
+        await translateNextCopy();
+        return;
+      }
+    } catch (err) {
+      reply = String(err);
+    }
+    replyOk = ok;
+    mode = "reply";
+    sound(ok ? "success" : "error");
+
+    await sleep(answer ? ANSWER_LINGER_MS : REPLY_LINGER_MS);
+    if (mode !== "reply") return;
+
+    // A typed request that didn't work goes back to the prompt with the
+    // text kept, so it can be fixed instead of retyped.
+    if (!ok && lastSource === "shortcut") {
+      request = trimmed;
+      mode = "input";
+      focusPrompt();
+      armIdleHide();
+    } else {
+      await handleMinimize();
+    }
+  }
+
+  // "traduis" with no text: show the hint until something gets copied.
+  async function translateNextCopy() {
+    mode = "copywait";
+    try {
+      const result = await invoke<Translation>("translate_clipboard");
+      if (mode !== "copywait") return;
+      await showTranslation(result);
+    } catch (err) {
+      if (mode !== "copywait") return;
+      reply = String(err);
+      replyOk = false;
+      mode = "reply";
+      sound("error");
+      await sleep(REPLY_LINGER_MS);
+      if (mode === "reply") await handleMinimize();
+    }
+  }
+
+  async function showTranslation(next: Translation) {
+    translation = next;
+    copied = false;
+    replyOk = true;
+    mode = "translation";
+    sound("success");
+    // Same pre-size-then-animate trick as the settings drawer.
+    await invoke("set_pill_drawer", { height: TRANSLATION_DRAWER_HEIGHT });
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        drawerOpen = true;
+      });
+    });
+    armTranslationHide();
+  }
+
+  function armTranslationHide() {
+    clearTimeout(translationTimer);
+    if (mode !== "translation" || pointerInside) return;
+    translationTimer = setTimeout(() => void dismissTranslation(), TRANSLATION_LINGER_MS);
+  }
+
+  async function closeDrawer() {
+    clearTimeout(translationTimer);
+    if (!drawerOpen) return;
+    drawerOpen = false;
+    await sleep(SETTINGS_TRANSITION_MS);
+    await invoke("set_pill_drawer", { height: 0 });
+  }
+
+  async function dismissTranslation() {
+    if (mode !== "translation") return;
+    await handleMinimize();
+  }
+
+  async function copyTranslation() {
+    if (!translation) return;
+    try {
+      await invoke("copy_text", { text: translation.translated });
+      copied = true;
+    } catch {
+      copied = false;
+    }
+  }
+
+  function handlePromptKeydown(event: KeyboardEvent) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void submitRequest(request);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      void handleMinimize();
+    } else {
+      armIdleHide();
+    }
+  }
+
+  async function handleVoiceResult(result: VoiceResult) {
+    if (mode !== "listening") return;
+    if (result.text) {
+      await submitRequest(result.text);
+    } else if (result.error) {
+      // Spoken commands unavailable (e.g. online speech off): say why,
+      // then fall back to typing so the request isn't lost.
+      reply = result.error;
+      replyOk = false;
+      mode = "reply";
+      sound("error");
+      await sleep(REPLY_LINGER_MS + 1200);
+      if (mode !== "reply") return;
+      lastSource = "shortcut";
+      mode = "input";
+      focusPrompt();
+      armIdleHide();
+    } else {
+      await handleMinimize();
+    }
+  }
+
+  function startRinging(next: Ringing) {
+    // Several due at the same moment: show them together.
+    if (mode === "ringing" && ringing) {
+      const messages = [ringing.message, next.message].filter(Boolean);
+      next = {
+        kind: ringing.kind === "alarm" || next.kind === "alarm" ? "alarm" : "reminder",
+        time: next.time,
+        message: messages.length ? messages.join(" · ") : null,
+      };
+    }
+    stopRinging();
+    cancelIdleHide();
+    ringing = next;
+    showControls = false;
+    mode = "ringing";
+    if (next.kind === "alarm") {
+      sound("alarm");
+      const repeat = setInterval(() => sound("alarm"), ALARM_REPEAT_MS);
+      ringTimers.push(repeat as unknown as ReturnType<typeof setTimeout>);
+      ringTimers.push(setTimeout(() => void dismissRinging(), ALARM_GIVE_UP_MS));
+    } else {
+      sound("reminder");
+      ringTimers.push(setTimeout(() => void dismissRinging(), REMINDER_LINGER_MS));
+    }
+  }
+
+  function stopRinging() {
+    for (const timer of ringTimers) {
+      clearTimeout(timer);
+      clearInterval(timer);
+    }
+    ringTimers = [];
+  }
+
+  async function dismissRinging() {
+    if (mode !== "ringing") return;
+    stopRinging();
+    ringing = null;
+    await handleMinimize();
+  }
+
   // Grows the window first (invisibly, since the drawer starts collapsed),
   // then triggers the CSS reveal — the same pre-size-then-animate trick used
   // for the pill's own reveal, so the drawer's growth is a smooth CSS
   // transition rather than snapping to a native window resize.
   async function openSettings() {
     if (settingsOpen) return;
+    cancelIdleHide();
     await invoke("set_settings_panel_open", { open: true });
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -110,6 +514,7 @@
     settingsOpen = false;
     await sleep(SETTINGS_TRANSITION_MS);
     await invoke("set_settings_panel_open", { open: false });
+    armIdleHide();
   }
 
   function toggleSettings() {
@@ -126,7 +531,83 @@
     });
   }
 
+  async function toggleVoiceWake() {
+    voiceError = "";
+    settings = await invoke<AppSettings>("set_voice_wake_enabled", {
+      enabled: !settings.voice_wake_enabled,
+    });
+  }
+
+  async function toggleSounds() {
+    settings = await invoke<AppSettings>("set_sounds_enabled", {
+      enabled: !settings.sounds_enabled,
+    });
+    // Let the user hear what they just turned on.
+    sound("wake");
+  }
+
+  async function setLanguage(language: Language) {
+    if (language === settings.language) return;
+    voiceError = "";
+    shortcutError = "";
+    settings = await invoke<AppSettings>("set_language", { language });
+  }
+
+  function startShortcutCapture() {
+    shortcutError = "";
+    capturingShortcut = true;
+  }
+
+  // KeyboardEvent.code -> the accelerator syntax the global-shortcut plugin
+  // parses ("KeyM" -> "M", "Digit1" -> "1"; F-keys, Space, arrows... as-is).
+  function acceleratorKey(code: string): string | null {
+    if (/^(Control|Shift|Alt|Meta|OS)(Left|Right)?$/.test(code)) return null;
+    if (code.startsWith("Key")) return code.slice(3);
+    if (code.startsWith("Digit")) return code.slice(5);
+    return code;
+  }
+
+  async function handleShortcutCapture(event: KeyboardEvent) {
+    if (mode === "ringing" && event.key === "Escape") {
+      event.preventDefault();
+      void dismissRinging();
+      return;
+    }
+    if ((mode === "translation" || mode === "copywait") && event.key === "Escape") {
+      event.preventDefault();
+      void handleMinimize();
+      return;
+    }
+    if (!capturingShortcut) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (event.key === "Escape") {
+      capturingShortcut = false;
+      return;
+    }
+    const key = acceleratorKey(event.code);
+    if (!key) return; // only a modifier so far; wait for the real key
+
+    const parts = [
+      event.ctrlKey && "Ctrl",
+      event.altKey && "Alt",
+      event.shiftKey && "Shift",
+      event.metaKey && "Super",
+      key,
+    ].filter(Boolean);
+
+    capturingShortcut = false;
+    try {
+      settings = await invoke<AppSettings>("set_summon_shortcut", { shortcut: parts.join("+") });
+    } catch (err) {
+      shortcutError = String(err);
+    }
+  }
+
   async function handleEraseMemory() {
+    voiceError = "";
+    shortcutError = "";
     settings = await invoke<AppSettings>("erase_memory");
   }
 
@@ -137,7 +618,34 @@
     });
 
     const unlistenReveal = listen("mimo://reveal", () => {
+      cancelIdleHide();
+      stopRinging();
+      ringing = null;
+      mode = "idle";
+      showControls = true;
       playQuickReveal();
+      setTimeout(armIdleHide, PILL_TRANSITION_MS);
+    });
+
+    const unlistenSummon = listen<SummonSource>("mimo://summon", (event) => {
+      void summon(event.payload);
+    });
+
+    const unlistenVoiceResult = listen<VoiceResult>("mimo://voice-result", (event) => {
+      void handleVoiceResult(event.payload);
+    });
+
+    const unlistenRinging = listen<Ringing>("mimo://ringing", (event) => {
+      startRinging(event.payload);
+    });
+
+    const unlistenVoiceError = listen<string>("mimo://voice-error", (event) => {
+      voiceError = event.payload;
+    });
+
+    // Clicking elsewhere dismisses the typed prompt, like any popup.
+    const unlistenFocus = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (!focused && mode === "input") void handleMinimize();
     });
 
     const unlistenOpenSettings = listen("mimo://open-settings", () => {
@@ -150,13 +658,35 @@
     return () => {
       void unlistenReveal.then((fn) => fn());
       void unlistenOpenSettings.then((fn) => fn());
+      void unlistenSummon.then((fn) => fn());
+      void unlistenVoiceResult.then((fn) => fn());
+      void unlistenVoiceError.then((fn) => fn());
+      void unlistenFocus.then((fn) => fn());
+      void unlistenRinging.then((fn) => fn());
+      stopRinging();
+      cancelIdleHide();
     };
   });
 
-  async function handleMinimize() {
-    if (phase !== "ready") return;
+  // Shared by the minimize button, the idle timer and dismissing a prompt;
+  // concurrent callers (e.g. Escape + blur) all wait on the same animation.
+  function handleMinimize(): Promise<void> {
+    if (minimizing) return minimizing;
+    if (phase !== "ready") return Promise.resolve();
+    minimizing = playMinimize().finally(() => {
+      minimizing = null;
+    });
+    return minimizing;
+  }
 
+  async function playMinimize() {
+    cancelIdleHide();
+    stopRinging();
+    capturingShortcut = false;
+    if (mode === "copywait") void invoke("cancel_translation");
     await closeSettings();
+    await closeDrawer();
+    cancelIdleHide();
 
     // Let the buttons fade out and the status recenter first, then retract
     // the pill back to a dot before actually hiding the window.
@@ -172,6 +702,10 @@
     // Reset back to the settled "ready" layout (window is hidden, so this is
     // invisible) so the next tray reveal just has to grow the pill again.
     phase = "ready";
+    mode = "idle";
+    request = "";
+    reply = "";
+    translation = null;
     showControls = true;
   }
 
@@ -180,13 +714,19 @@
   }
 </script>
 
+<svelte:window onkeydowncapture={handleShortcutCapture} />
+
 <main class="stage">
   <div
     class="pill"
     class:compact={stage === "compact"}
     class:full={stage === "full"}
     class:settings-open={settingsOpen}
+    class:drawer-open={drawerOpen}
     data-tauri-drag-region
+    role="presentation"
+    onpointerenter={handlePointerEnter}
+    onpointerleave={handlePointerLeave}
   >
     <div class="sheen"></div>
 
@@ -198,7 +738,7 @@
               <span class="tick" style={`--i: ${i}`}></span>
             {/each}
           </span>
-          <span class="label">Loading…</span>
+          <span class="label">{t.loading}</span>
         </div>
       </div>
     {:else if phase === "ready"}
@@ -207,13 +747,13 @@
         in:fade={{ duration: 380, delay: 120, easing: cubicOut }}
         out:fade={{ duration: 220, easing: cubicOut }}
       >
-        <div class="status" class:shifted={showControls}>
+        <div class="status" class:shifted={showControls} class:hidden={mode !== "idle"}>
           <span class="dot running"></span>
           <span class="label">Mimo</span>
         </div>
 
-        <div class="actions" class:visible={showControls}>
-          <button class="action" type="button" aria-label="Settings" onclick={toggleSettings}>
+        <div class="actions" class:visible={showControls && mode === "idle"}>
+          <button class="action" type="button" aria-label={t.settings} onclick={toggleSettings}>
             <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
               <line x1="1" y1="3" x2="11" y2="3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
               <circle cx="4" cy="3" r="1.3" fill="currentColor" />
@@ -221,36 +761,145 @@
               <circle cx="8" cy="9" r="1.3" fill="currentColor" />
             </svg>
           </button>
-          <button class="action" type="button" aria-label="Minimize Mimo" onclick={handleMinimize}>
+          <button class="action" type="button" aria-label={t.minimize} onclick={handleMinimize}>
             <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
               <line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
             </svg>
           </button>
-          <button class="action action-close" type="button" aria-label="Close Mimo" onclick={handleClose}>
+          <button class="action action-close" type="button" aria-label={t.close} onclick={handleClose}>
             <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
               <line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
               <line x1="10" y1="2" x2="2" y2="10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
             </svg>
           </button>
         </div>
+
+        {#if mode !== "idle"}
+          <div class="prompt" in:fade={{ duration: 220, delay: 80, easing: cubicOut }}>
+            <span
+              class="dot running"
+              class:listening={mode === "listening" || mode === "copywait"}
+              class:thinking={mode === "thinking"}
+              class:failed={mode === "reply" && !replyOk}
+              class:alarm={mode === "ringing"}
+            ></span>
+            {#if mode === "input"}
+              <input
+                class="prompt-input"
+                type="text"
+                placeholder={t.placeholder}
+                spellcheck="false"
+                autocomplete="off"
+                bind:this={promptInput}
+                bind:value={request}
+                onkeydown={handlePromptKeydown}
+              />
+            {:else if mode === "listening"}
+              <span class="label prompt-text">{t.listening}</span>
+            {:else if mode === "translation"}
+              <span class="label prompt-text">{t.translation}</span>
+            {:else if mode === "ringing" && ringing}
+              <span class="label prompt-text ring-text">
+                <span class="ring-time">{ringing.time}</span>
+                {#if ringing.message}<span class="ring-message">{ringing.message}</span>{/if}
+              </span>
+              <button class="stop-button" type="button" onclick={dismissRinging}>{t.stop}</button>
+            {:else}
+              <span class="label prompt-text" class:muted={mode === "thinking"}>{reply}</span>
+            {/if}
+          </div>
+        {/if}
+      </div>
+
+      <div class="translation-panel" class:open={drawerOpen}>
+        {#if translation}
+          <div class="translation-head">
+            <span class="lang-chip">{translation.from.toUpperCase()} → {translation.to.toUpperCase()}</span>
+            <button class="copy-button" class:copied type="button" onclick={copyTranslation}>
+              {copied ? t.copied : t.copy}
+            </button>
+          </div>
+          <p class="translation-text">{translation.translated}</p>
+          <p class="translation-original">{translation.original}</p>
+        {/if}
       </div>
 
       <div class="settings-panel" class:open={settingsOpen}>
         <div class="settings-row">
-          <span class="settings-label">Launch at login</span>
+          <span class="settings-label">{t.launchAtLogin}</span>
           <button
             class="switch"
             class:on={settings.launch_at_startup}
             type="button"
             role="switch"
             aria-checked={settings.launch_at_startup}
-            aria-label="Launch at login"
+            aria-label={t.launchAtLogin}
             onclick={toggleLaunchAtStartup}
           >
             <span class="switch-knob"></span>
           </button>
         </div>
-        <button class="settings-action" type="button" onclick={handleEraseMemory}>Erase memory</button>
+        <div class="settings-row">
+          <span class="settings-label">{t.shortcut}</span>
+          <button
+            class="keycap"
+            class:capturing={capturingShortcut}
+            type="button"
+            aria-label={t.changeShortcut}
+            onclick={startShortcutCapture}
+          >
+            {capturingShortcut ? t.pressKeys : settings.summon_shortcut}
+          </button>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">{t.voiceWake}</span>
+          <button
+            class="switch"
+            class:on={settings.voice_wake_enabled}
+            type="button"
+            role="switch"
+            aria-checked={settings.voice_wake_enabled}
+            aria-label={t.voiceWake}
+            onclick={toggleVoiceWake}
+          >
+            <span class="switch-knob"></span>
+          </button>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">{t.language}</span>
+          <div class="segmented" role="radiogroup" aria-label={t.language}>
+            {#each [["en", "EN"], ["fr", "FR"]] as [code, label] (code)}
+              <button
+                class="segment"
+                class:selected={settings.language === code}
+                type="button"
+                role="radio"
+                aria-checked={settings.language === code}
+                onclick={() => setLanguage(code as Language)}
+              >
+                {label}
+              </button>
+            {/each}
+          </div>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">{t.sounds}</span>
+          <button
+            class="switch"
+            class:on={settings.sounds_enabled}
+            type="button"
+            role="switch"
+            aria-checked={settings.sounds_enabled}
+            aria-label={t.sounds}
+            onclick={toggleSounds}
+          >
+            <span class="switch-knob"></span>
+          </button>
+        </div>
+        {#if shortcutError || (settings.voice_wake_enabled && voiceError)}
+          <p class="settings-hint">{shortcutError || voiceError}</p>
+        {/if}
+        <button class="settings-action" type="button" onclick={handleEraseMemory}>{t.eraseMemory}</button>
       </div>
     {/if}
   </div>
@@ -344,9 +993,9 @@
   /* Grows downward to reveal .settings-panel. The window is resized to fit
      this *before* the class is added (see openSettings in the script), so
      the extra room already exists and this is a pure CSS-driven grow —
-     matches SETTINGS_PANEL_HEIGHT (140) + the base 44px in src-tauri/src/lib.rs. */
+     matches SETTINGS_PANEL_HEIGHT (264) + the base 44px in src-tauri/src/lib.rs. */
   .pill.full.settings-open {
-    height: 184px;
+    height: 308px;
     border-radius: 28px;
   }
 
@@ -433,12 +1082,118 @@
     transform: translate(-50%, -50%);
     transition:
       left 0.4s cubic-bezier(0.16, 1, 0.3, 1),
-      transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+      transform 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+      opacity 0.2s ease;
   }
 
   .status.shifted {
     left: 18px;
     transform: translate(0, -50%);
+  }
+
+  .status.hidden {
+    opacity: 0;
+  }
+
+  /* Typed prompt / listening / reply line — takes the whole bar while
+     Mimo is handling a request (status and buttons fade out under it). */
+  .prompt {
+    position: absolute;
+    inset: 0 18px;
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    min-width: 0;
+  }
+
+  .prompt-input {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    outline: none;
+    padding: 0;
+    background: transparent;
+    color: #f5f5f7;
+    caret-color: #32d74b;
+    font-family:
+      -apple-system,
+      "SF Pro Display",
+      "Segoe UI",
+      Inter,
+      sans-serif;
+    font-size: 0.92rem;
+    font-weight: 500;
+    /* .bar and the page disable these; the prompt needs them back. */
+    pointer-events: auto;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  .prompt-input::placeholder {
+    color: rgba(245, 245, 247, 0.42);
+  }
+
+  .prompt-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ring-text {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    flex: 1;
+  }
+
+  .ring-time {
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+  }
+
+  .ring-message {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: rgba(245, 245, 247, 0.75);
+  }
+
+  .stop-button {
+    flex-shrink: 0;
+    border: none;
+    border-radius: 999px;
+    padding: 4px 12px;
+    background: #ff9f0a;
+    color: #1c1c1e;
+    font-family:
+      -apple-system,
+      "SF Pro Display",
+      "Segoe UI",
+      Inter,
+      sans-serif;
+    font-size: 0.78rem;
+    font-weight: 700;
+    cursor: pointer;
+    pointer-events: auto;
+    transition: transform 0.1s ease, filter 0.15s ease;
+  }
+
+  .stop-button:hover {
+    filter: brightness(1.1);
+  }
+
+  .stop-button:active {
+    transform: scale(0.94);
+  }
+
+  .dot.running.alarm {
+    background: #ff9f0a;
+    box-shadow: 0 0 10px rgba(255, 159, 10, 0.85);
+    animation: dot-pulse 0.8s ease-in-out infinite;
+  }
+
+  .prompt-text.muted {
+    color: rgba(245, 245, 247, 0.6);
   }
 
   .actions {
@@ -494,6 +1249,106 @@
 
   /* Settings drawer: collapsed to zero height, revealed below the bar once
      the pill itself has grown to make room (see .pill.full.settings-open). */
+  /* Grows the same way as .settings-open, by TRANSLATION_DRAWER_HEIGHT. */
+  .pill.full.drawer-open {
+    height: calc(44px + 170px);
+    border-radius: 26px;
+    /* Text to read: solid, nothing showing through. */
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0) 38%),
+      linear-gradient(160deg, #2a2a31, #111115);
+  }
+
+  .translation-panel {
+    flex: 0 0 0;
+    width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+    opacity: 0;
+    padding: 0 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    pointer-events: none;
+    transition:
+      flex-basis 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+      opacity 0.3s ease;
+    font-family:
+      -apple-system,
+      "SF Pro Display",
+      "Segoe UI",
+      Inter,
+      sans-serif;
+  }
+
+  .translation-panel.open {
+    flex-basis: 170px;
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .translation-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .lang-chip {
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: rgba(245, 245, 247, 0.5);
+  }
+
+  .copy-button {
+    border: none;
+    border-radius: 999px;
+    padding: 4px 11px;
+    background: rgba(10, 132, 255, 0.2);
+    color: #64b5ff;
+    font: inherit;
+    font-size: 0.74rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+
+  .copy-button:hover {
+    background: rgba(10, 132, 255, 0.3);
+  }
+
+  .copy-button.copied {
+    background: rgba(50, 215, 75, 0.2);
+    color: #7ee891;
+  }
+
+  .translation-text {
+    margin: 0;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    font-size: 0.95rem;
+    font-weight: 500;
+    line-height: 1.35;
+    color: #f5f5f7;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  .translation-original {
+    margin: 0 0 14px;
+    font-size: 0.74rem;
+    line-height: 1.3;
+    color: rgba(245, 245, 247, 0.45);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
   .settings-panel {
     flex: 0 0 0;
     width: 100%;
@@ -512,7 +1367,7 @@
   }
 
   .settings-panel.open {
-    flex-basis: 140px;
+    flex-basis: 264px;
     opacity: 1;
     pointer-events: auto;
   }
@@ -569,6 +1424,83 @@
     transform: translateX(15px);
   }
 
+  .keycap {
+    min-width: 36px;
+    border: none;
+    border-radius: 6px;
+    padding: 3px 9px;
+    background: rgba(255, 255, 255, 0.12);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.12) inset, 0 1px 2px rgba(0, 0, 0, 0.35);
+    color: #f5f5f7;
+    font-family:
+      -apple-system,
+      "SF Pro Display",
+      "Segoe UI",
+      Inter,
+      sans-serif;
+    font-size: 0.76rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+
+  .keycap:hover {
+    background: rgba(255, 255, 255, 0.2);
+  }
+
+  .keycap.capturing {
+    background: rgba(50, 215, 75, 0.22);
+    color: #7ee891;
+  }
+
+  .segmented {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.1);
+  }
+
+  .segment {
+    border: none;
+    border-radius: 5px;
+    padding: 2px 9px;
+    background: transparent;
+    color: rgba(245, 245, 247, 0.6);
+    font-family:
+      -apple-system,
+      "SF Pro Display",
+      "Segoe UI",
+      Inter,
+      sans-serif;
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition:
+      background 0.15s ease,
+      color 0.15s ease;
+  }
+
+  .segment.selected {
+    background: rgba(255, 255, 255, 0.22);
+    color: #f5f5f7;
+  }
+
+  .settings-hint {
+    margin: -2px 0 0;
+    color: #ff9f97;
+    font-family:
+      -apple-system,
+      "SF Pro Display",
+      "Segoe UI",
+      Inter,
+      sans-serif;
+    font-size: 0.7rem;
+    line-height: 1.3;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
   .settings-action {
     align-self: flex-start;
     border: none;
@@ -607,6 +1539,33 @@
   .dot.running {
     background: #32d74b;
     box-shadow: 0 0 8px rgba(50, 215, 75, 0.7);
+  }
+
+  .dot.listening {
+    background: #0a84ff;
+    box-shadow: 0 0 10px rgba(10, 132, 255, 0.8);
+    animation: dot-pulse 1.1s ease-in-out infinite;
+  }
+
+  .dot.thinking {
+    animation: dot-pulse 0.7s ease-in-out infinite;
+  }
+
+  .dot.failed {
+    background: #ff453a;
+    box-shadow: 0 0 8px rgba(255, 69, 58, 0.7);
+  }
+
+  @keyframes dot-pulse {
+    0%,
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+    50% {
+      transform: scale(0.7);
+      opacity: 0.6;
+    }
   }
 
   .spinner {
