@@ -1,12 +1,13 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import { onMount } from "svelte";
 
   type Language = "en" | "fr";
   const TEXT = {
-    en: { settings: "Settings", close: "Close Mimo" },
-    fr: { settings: "Réglages", close: "Fermer Mimo" },
+    en: { settings: "Settings", close: "Close Mimo", problem: "A problem?" },
+    fr: { settings: "Réglages", close: "Fermer Mimo", problem: "Un problème ?" },
   };
 
   let visible = $state(false);
@@ -46,6 +47,12 @@
     void invoke("open_settings_from_tray");
   }
 
+  // Bug reports go to the GitHub issues (the browser taking focus closes
+  // the menu, like any click outside it).
+  function handleProblem() {
+    void openUrl("https://github.com/Riskooooo/Mimo/issues");
+  }
+
   function handleClose() {
     void invoke("quit_app");
   }
@@ -67,6 +74,15 @@
       <line x1="10" y1="2" x2="2" y2="10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
     </svg>
     <span>{t.close}</span>
+  </button>
+  <div class="separator" role="separator"></div>
+  <button class="menu-item" type="button" onclick={handleProblem}>
+    <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+      <circle cx="6" cy="6" r="4.8" fill="none" stroke="currentColor" stroke-width="1.2" />
+      <path d="M4.6 4.7a1.45 1.45 0 1 1 2.1 1.3c-.45.24-.7.55-.7 1v.25" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" />
+      <circle cx="6" cy="8.75" r=".6" fill="currentColor" />
+    </svg>
+    <span>{t.problem}</span>
   </button>
 </main>
 
@@ -133,6 +149,13 @@
   }
 
   .menu-item:hover {
+    background: rgba(255, 255, 255, 0.1);
+  }
+
+  .separator {
+    height: 1px;
+    margin: 3px 8px;
+    flex-shrink: 0;
     background: rgba(255, 255, 255, 0.1);
   }
 

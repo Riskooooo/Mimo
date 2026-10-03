@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::info::Lang;
+use crate::tasks::{capitalize, find_due, remainder, Due, Words};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -36,6 +37,49 @@ pub enum ReminderCommand {
     List,
     /// Cancel all pending ones (of one kind, if said: "annule mes réveils").
     Cancel(Option<ReminderKind>),
+}
+
+/// When a reminder typed in the panel is due: relative, or a day and/or
+/// time ("demain à 9 h", "vendredi") that the shell resolves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReminderTime {
+    In { seconds: u64 },
+    On(Due),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewReminder {
+    pub kind: ReminderKind,
+    pub time: ReminderTime,
+    pub message: Option<String>,
+}
+
+/// Parses what's typed in the panel's "new reminder" field: a message with
+/// a moment ("appeler maman demain à 18h", "dans 10 min sortir le linge"),
+/// no command words needed. `None` without a moment.
+pub fn parse_new_reminder(text: &str) -> Option<NewReminder> {
+    let words = Words::new(text);
+    let folded: Vec<String> = words.tokens.iter().map(|t| t.folded.clone()).collect();
+    let kind = if folded.iter().any(|t| ALARM_WORDS.contains(&t.as_str())) {
+        ReminderKind::Alarm
+    } else {
+        ReminderKind::Reminder
+    };
+    let relative = (0..folded.len())
+        .filter(|&i| matches!(folded[i].as_str(), "dans" | "in"))
+        .find_map(|i| duration(&folded, i + 1).map(|(seconds, end)| (seconds, i..end)));
+    let (time, span) = match relative {
+        Some((seconds, range)) => (ReminderTime::In { seconds }, range.collect::<Vec<_>>()),
+        None => {
+            let (due, used) = find_due(&words);
+            if due.is_empty() {
+                return None;
+            }
+            (ReminderTime::On(due), used)
+        }
+    };
+    let message = remainder(&words, &[REMIND_WORDS, ALARM_WORDS], Some(&span)).map(|m| capitalize(&m));
+    Some(NewReminder { kind, time, message })
 }
 
 /// A scheduled reminder, as persisted.
@@ -531,5 +575,25 @@ mod tests {
             "Rappel à 18 h 30 : appeler maman"
         );
         assert_eq!(format_created(Lang::En, ReminderKind::Alarm, 7, 0, None), "Alarm set for 7:00 AM.");
+    }
+
+    #[test]
+    fn reminders_typed_in_the_panel() {
+        use crate::tasks::{DayRef, Due};
+        let typed = parse_new_reminder("Appeler maman demain à 18h").unwrap();
+        assert_eq!(typed.kind, ReminderKind::Reminder);
+        assert_eq!(typed.time, ReminderTime::On(Due { day: Some(DayRef::Tomorrow), time: Some((18, 0)) }));
+        assert_eq!(typed.message.as_deref(), Some("Appeler maman"));
+
+        let typed = parse_new_reminder("dans 10 minutes sortir le linge").unwrap();
+        assert_eq!(typed.time, ReminderTime::In { seconds: 600 });
+        assert_eq!(typed.message.as_deref(), Some("Sortir le linge"));
+
+        let typed = parse_new_reminder("réveil à 7h30").unwrap();
+        assert_eq!(typed.kind, ReminderKind::Alarm);
+        assert_eq!(typed.time, ReminderTime::On(Due { day: None, time: Some((7, 30)) }));
+        assert_eq!(typed.message, None);
+
+        assert_eq!(parse_new_reminder("appeler maman"), None);
     }
 }

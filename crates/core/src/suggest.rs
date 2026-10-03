@@ -1,7 +1,7 @@
 //! Suggestions Mimo makes on its own, from what it has learned
 //! ([`crate::activity`]) and the PC's load: close an app that's choking the
-//! PC, launch the apps usually opened around this time, go to bed, take a
-//! break. [`next`] decides what (if anything) is worth interrupting for
+//! PC, launch the apps usually opened around this time, plug in a low
+//! battery, empty an overflowing recycle bin, go to bed, take a break. [`next`] decides what (if anything) is worth interrupting for
 //! right now; [`History`] remembers what was shown, snoozed or muted so
 //! Mimo never nags. Pure: the shell gathers the [`Context`].
 
@@ -56,12 +56,34 @@ fn cooldown(key: &str) -> i64 {
         "late" => 20 * HOUR,
         "routine" => 20 * HOUR,
         "close" => 2 * HOUR,
+        "battery" => 30 * MINUTE,
+        "recycle" => 3 * DAY,
         _ => DAY,
     }
 }
 
 /// "Later" puts a suggestion off this long.
 pub const SNOOZE_SECS: i64 = HOUR;
+
+/// Battery levels (percent) worth a word while unplugged.
+pub const BATTERY_LOW: u8 = 20;
+pub const BATTERY_CRITICAL: u8 = 10;
+/// A recycle bin this big (or with this many items) is worth emptying.
+pub const RECYCLE_BIN_FULL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub const RECYCLE_BIN_FULL_ITEMS: u64 = 1000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Battery {
+    pub percent: u8,
+    /// Plugged in (charging or full).
+    pub plugged: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecycleBin {
+    pub bytes: u64,
+    pub items: u64,
+}
 
 /// One CPU/memory reading.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -117,6 +139,9 @@ pub struct Context<'a> {
     /// Heaviest running apps (only needed under strain).
     pub hogs: &'a [Hog],
     pub apps: &'a AppCatalog,
+    /// `None` on a PC without a battery.
+    pub battery: Option<Battery>,
+    pub recycle_bin: Option<RecycleBin>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -126,6 +151,9 @@ pub enum Action {
     Launch { apps: Vec<LaunchTarget> },
     /// Ask an app to close (like clicking its ×), by executable name.
     Close { label: String, process: String },
+    /// Empty the recycle bin (all drives).
+    #[serde(rename = "empty_recycle_bin")]
+    EmptyRecycleBin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -185,10 +213,17 @@ impl History {
 
 /// The suggestion worth showing now, if any. Never while the user is away,
 /// in a fullscreen app (game, video), within [`MIN_GAP_SECS`] of the last
-/// one, or past [`MAX_PER_DAY`].
+/// one, or past [`MAX_PER_DAY`] — except a low battery, which can't wait.
 pub fn next(ctx: &Context, history: &History) -> Option<Suggestion> {
     let present = ctx.in_front?;
-    if present.fullscreen || present.idle_secs >= IDLE_AFTER_SECS {
+    if present.idle_secs >= IDLE_AFTER_SECS {
+        return None;
+    }
+    let allowed = |s: &Suggestion| s.keys.iter().all(|key| history.allows(key, ctx.now));
+    if let Some(battery) = low_battery(ctx).filter(|s| allowed(s)) {
+        return Some(battery);
+    }
+    if present.fullscreen {
         return None;
     }
     let today = history.shown_at.iter().filter(|at| **at >= ctx.day_start).count();
@@ -196,12 +231,50 @@ pub fn next(ctx: &Context, history: &History) -> Option<Suggestion> {
         return None;
     }
 
-    let allowed = |s: &Suggestion| s.keys.iter().all(|key| history.allows(key, ctx.now));
     close_hog(ctx, history)
         .or_else(|| routine(ctx, history))
         .filter(|s| allowed(s))
+        .or_else(|| full_recycle_bin(ctx).filter(|s| allowed(s)))
         .or_else(|| late_night(ctx).filter(|s| allowed(s)))
         .or_else(|| take_a_break(ctx).filter(|s| allowed(s)))
+}
+
+/// Unplugged and running low: plug it in. Critical gets its own key so it
+/// still comes up after "later" on the first warning.
+fn low_battery(ctx: &Context) -> Option<Suggestion> {
+    let battery = ctx.battery.filter(|b| !b.plugged && b.percent <= BATTERY_LOW)?;
+    let critical = battery.percent <= BATTERY_CRITICAL;
+    let percent = battery.percent;
+    let message = match (ctx.lang, critical) {
+        (Lang::Fr, false) => format!("Batterie à {percent} % — pense à brancher ton chargeur."),
+        (Lang::Fr, true) => format!("Batterie presque vide ({percent} %) ! Branche ton PC pour ne rien perdre."),
+        (Lang::En, false) => format!("Battery at {percent}% — time to plug in your charger."),
+        (Lang::En, true) => format!("Battery almost empty ({percent}%)! Plug in now so you don't lose anything."),
+    };
+    let key = if critical { "battery:critical" } else { "battery:low" };
+    Some(Suggestion { keys: vec![key.into()], message, action: None })
+}
+
+/// The recycle bin has piled up: offer to empty it.
+fn full_recycle_bin(ctx: &Context) -> Option<Suggestion> {
+    let bin = ctx
+        .recycle_bin
+        .filter(|b| b.bytes >= RECYCLE_BIN_FULL_BYTES || b.items >= RECYCLE_BIN_FULL_ITEMS)?;
+    let gb = bin.bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+    let size = if gb >= 1.0 { format!("{gb:.1} Go") } else { format!("{:.0} Mo", gb * 1024.0) };
+    let message = match ctx.lang {
+        Lang::Fr => format!(
+            "Ta corbeille déborde : {} dans {} éléments. Je la vide ? (C'est définitif.)",
+            size.replace('.', ","),
+            bin.items
+        ),
+        Lang::En => format!(
+            "Your recycle bin is piling up: {} in {} items. Empty it? (This is permanent.)",
+            size.replace("Go", "GB").replace("Mo", "MB"),
+            bin.items
+        ),
+    };
+    Some(Suggestion { keys: vec!["recycle".into()], message, action: Some(Action::EmptyRecycleBin) })
 }
 
 /// Labels of apps seen in front lately, by key.
@@ -423,6 +496,8 @@ pub fn accepted_reply(action: &Action, lang: Lang) -> String {
         }
         (Action::Close { label, .. }, Lang::Fr) => format!("Fermeture de {label}…"),
         (Action::Close { label, .. }, Lang::En) => format!("Closing {label}…"),
+        (Action::EmptyRecycleBin, Lang::Fr) => "Corbeille vidée.".to_string(),
+        (Action::EmptyRecycleBin, Lang::En) => "Recycle bin emptied.".to_string(),
     }
 }
 
@@ -481,6 +556,8 @@ mod tests {
                 memory_percent: 94.0,
                 hogs: &self.hogs,
                 apps: &self.apps,
+                battery: None,
+                recycle_bin: None,
             }
         }
     }
@@ -617,5 +694,44 @@ mod tests {
         assert_eq!(clock(21 * 60 + 38, Lang::Fr), "21 h 45");
         assert_eq!(clock(9 * 60 + 2, Lang::En), "9 am");
         assert_eq!(clock(12 * 60 + 30, Lang::En), "12:30 pm");
+    }
+
+    #[test]
+    fn low_battery_comes_first_even_in_fullscreen() {
+        let world = World::new();
+        let noon = MIDNIGHT + 12 * HOUR;
+        let mut gaming = world.in_front.clone();
+        gaming.fullscreen = true;
+        let unplugged = Some(Battery { percent: 15, plugged: false });
+        let ctx = Context { battery: unplugged, in_front: Some(&gaming), ..world.at(noon, None, Lang::Fr) };
+        let s = next(&ctx, &History::default()).unwrap();
+        assert_eq!(s.keys, vec!["battery:low".to_string()]);
+        assert_eq!(s.message, "Batterie à 15 % — pense à brancher ton chargeur.");
+
+        // Plugged in, or still fine: nothing to say about it.
+        let plugged = Context { battery: Some(Battery { percent: 15, plugged: true }), ..world.at(noon, None, Lang::Fr) };
+        assert!(next(&plugged, &History::default()).is_none_or(|s| !s.keys[0].starts_with("battery")));
+        let fine = Context { battery: Some(Battery { percent: 60, plugged: false }), ..world.at(noon, None, Lang::Fr) };
+        assert!(next(&fine, &History::default()).is_none_or(|s| !s.keys[0].starts_with("battery")));
+
+        // Snoozed at 15 %, but critical at 8 % still warns.
+        let mut history = History::default();
+        history.snooze(&s, noon);
+        let critical = Context { battery: Some(Battery { percent: 8, plugged: false }), ..world.at(noon + 10 * MINUTE, None, Lang::En) };
+        assert_eq!(next(&critical, &history).unwrap().keys, vec!["battery:critical".to_string()]);
+    }
+
+    #[test]
+    fn a_full_recycle_bin_can_be_emptied() {
+        let world = World::new();
+        let noon = MIDNIGHT + 12 * HOUR;
+        let bin = Some(RecycleBin { bytes: 3 * 1024 * 1024 * 1024 + 300 * 1024 * 1024, items: 420 });
+        let ctx = Context { recycle_bin: bin, ..world.at(noon, None, Lang::Fr) };
+        let s = next(&ctx, &History::default()).unwrap();
+        assert_eq!(s.action, Some(Action::EmptyRecycleBin));
+        assert_eq!(s.message, "Ta corbeille déborde : 3,3 Go dans 420 éléments. Je la vide ? (C'est définitif.)");
+
+        let small = Context { recycle_bin: Some(RecycleBin { bytes: 1024, items: 3 }), ..world.at(noon, None, Lang::Fr) };
+        assert!(next(&small, &History::default()).is_none_or(|s| s.action != Some(Action::EmptyRecycleBin)));
     }
 }

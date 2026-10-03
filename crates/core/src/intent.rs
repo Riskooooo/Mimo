@@ -11,6 +11,9 @@ use std::collections::HashSet;
 
 use crate::activity::{self, ActivityQuery};
 use crate::apps::{AppCatalog, InstalledApp};
+use crate::capture::{self, CaptureCommand};
+use crate::chat;
+use crate::platforms;
 use crate::info::{self, Lang, Question};
 use crate::reminders::{self, ReminderCommand};
 use crate::tasks::{self, TaskCommand};
@@ -37,6 +40,14 @@ pub enum Intent {
     Translate { request: TranslateRequest, lang: Lang },
     /// A question about the user's activity (screen time, a day's summary).
     Activity { query: ActivityQuery, lang: Lang },
+    /// A screenshot or screen recording (saved by the shell).
+    Capture { command: CaptureCommand, lang: Lang },
+    /// Small talk ("salut", "comment ça va ?").
+    Chat { topic: chat::Topic, lang: Lang },
+    /// "J'ai besoin d'aide": the pill asks whether it's an emergency.
+    Help { lang: Lang },
+    /// One of the user's own commands (see [`crate::custom`]).
+    Custom { action: crate::custom::CustomAction, lang: Lang },
     Unknown,
 }
 
@@ -63,7 +74,11 @@ impl Intent {
             | Intent::Reminder { .. }
             | Intent::Task { .. }
             | Intent::Translate { .. }
-            | Intent::Activity { .. } => "…".to_string(),
+            | Intent::Activity { .. }
+            | Intent::Capture { .. }
+            | Intent::Chat { .. }
+            | Intent::Help { .. }
+            | Intent::Custom { .. } => "…".to_string(),
             Intent::Unknown => match lang {
                 Lang::Fr => "Désolé, je n'ai pas compris. Essaie « ouvre youtube ».".to_string(),
                 Lang::En => "Sorry, I didn't get that. Try “open youtube”.".to_string(),
@@ -281,6 +296,9 @@ pub fn voice_phrases(language: &str, apps: &AppCatalog) -> Vec<String> {
     phrases.extend(tasks::voice_phrases(language).iter().map(|q| q.to_string()));
     phrases.extend(translate::voice_phrases(language).iter().map(|q| q.to_string()));
     phrases.extend(activity::voice_phrases(language).iter().map(|q| q.to_string()));
+    phrases.extend(capture::voice_phrases(language).iter().map(|q| q.to_string()));
+    phrases.extend(chat::voice_phrases(language).iter().map(|q| q.to_string()));
+    phrases.extend(platforms::voice_phrases(language));
 
     // Installed apps, by name, with the verbs people use for programs.
     let mut seen: HashSet<String> = phrases.iter().cloned().collect();
@@ -350,6 +368,13 @@ pub fn parse_in(request: &str, apps: &AppCatalog, lang: Option<Lang>) -> Intent 
     if let Some(command) = tasks::detect(request) {
         return Intent::Task { command, lang: lang_or_detected };
     }
+    // Before "merci"/"salut" are stripped as politeness below.
+    if let Some(topic) = chat::detect(&tokens) {
+        return Intent::Chat { topic, lang: lang_or_detected };
+    }
+    if chat::is_help_request(&tokens) {
+        return Intent::Help { lang: lang_or_detected };
+    }
 
     for phrase in POLITENESS {
         remove_phrase(&mut tokens, phrase);
@@ -373,6 +398,9 @@ pub fn parse_in(request: &str, apps: &AppCatalog, lang: Option<Lang>) -> Intent 
     }
     if let Some(command) = reminders::detect(&tokens) {
         return Intent::Reminder { command, lang };
+    }
+    if let Some(command) = capture::detect(&tokens) {
+        return Intent::Capture { command, lang };
     }
     if system::is_diagnostic_request(&tokens) {
         return Intent::Diagnose { lang };
@@ -400,6 +428,16 @@ pub fn parse_in(request: &str, apps: &AppCatalog, lang: Option<Lang>) -> Intent 
         }
     }
 
+    // Something on a platform: "mets squeezie sur youtube", "gotaga sur
+    // twitch", "ouvre spotify et affiche damso".
+    if let Some(found) = platforms::detect(&tokens, apps, lang) {
+        return if found.channel {
+            Intent::OpenUrl { label: format!("{} ({})", capitalize_first(&found.query), found.platform), url: found.url }
+        } else {
+            Intent::Search { engine: found.platform, query: found.query, url: found.url }
+        };
+    }
+
     if SEARCH_VERBS.contains(&first) && tokens.len() > 1 {
         tokens.remove(0);
         return parse_search(tokens);
@@ -414,6 +452,11 @@ pub fn parse_in(request: &str, apps: &AppCatalog, lang: Option<Lang>) -> Intent 
     }
 
     resolve_target(&tokens, apps).unwrap_or(Intent::Unknown)
+}
+
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
 }
 
 fn parse_search(mut tokens: Vec<String>) -> Intent {
@@ -710,7 +753,7 @@ mod tests {
     fn every_voice_phrase_is_understood() {
         for language in ["fr", "en"] {
             for phrase in voice_phrases(language, &AppCatalog::default()) {
-                if phrase.ends_with("[unk]") {
+                if phrase.contains("[unk]") {
                     continue;
                 }
                 assert_ne!(parse(&phrase), Intent::Unknown, "{language}: {phrase:?}");
@@ -836,6 +879,7 @@ mod tests {
     fn nonsense_is_unknown() {
         assert_eq!(parse("fais moi un café"), Intent::Unknown);
         assert_eq!(parse(""), Intent::Unknown);
-        assert_eq!(parse("hey mimo"), Intent::Unknown);
+        // Greeting Mimo is small talk now.
+        assert!(matches!(parse("hey mimo"), Intent::Chat { topic: chat::Topic::Greeting, .. }));
     }
 }

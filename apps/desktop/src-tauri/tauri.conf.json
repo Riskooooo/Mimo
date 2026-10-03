@@ -1,7 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Mimo",
-  "version": "0.1.0",
+  "mainBinaryName": "Mimo",
+  "version": "0.2.0",
   "identifier": "com.fabian.mimo",
   "build": {
     "beforeDevCommand": "npm run setup:voice && npm run dev",
@@ -25,14 +26,15 @@
         "shadow": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
-        "visible": false
+        "visible": false,
+        "create": false
       },
       {
         "label": "tray-menu",
         "title": "Mimo Menu",
         "url": "/tray-menu",
         "width": 190,
-        "height": 104,
+        "height": 150,
         "resizable": false,
         "maximizable": false,
         "minimizable": false,
@@ -41,7 +43,8 @@
         "shadow": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
-        "visible": false
+        "visible": false,
+        "create": false
       },
       {
         "label": "panel",
@@ -58,7 +61,26 @@
         "alwaysOnTop": false,
         "skipTaskbar": false,
         "center": true,
-        "visible": false
+        "visible": false,
+        "create": false
+      },
+      {
+        "label": "commands",
+        "title": "Mimo",
+        "url": "/commands",
+        "width": 480,
+        "height": 640,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": true,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "center": true,
+        "visible": false,
+        "create": false
       }
     ],
     "security": {

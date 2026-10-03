@@ -65,7 +65,8 @@
       noNotificationsHint: "Le centre de notifications de Windows est vide.",
       notificationsError: "Impossible de lire les notifications",
       noReminders: "Aucun rappel",
-      noRemindersHint: "Dis « rappelle-moi dans 10 minutes de… » ou « réveille-moi à 7 h ».",
+      noRemindersHint: "Dis « rappelle-moi dans 10 minutes de… » ou écris-en un ci-dessous.",
+      newReminder: "Nouveau rappel… ex. « appeler maman demain à 18h »",
       today: "Aujourd'hui",
       tomorrow: "Demain",
       alarm: "Réveil",
@@ -88,6 +89,10 @@
       allDoneHint: "Dis « ajoute une tâche : … » ou écris-la ci-dessous.",
       at: "à",
       complete: "Terminer",
+      edit: "Modifier",
+      save: "Enregistrer",
+      cancel: "Annuler",
+      clearDate: "Retirer la date",
       activity: "Activité",
       byHour: "Par heure",
       byDay: "Par jour",
@@ -116,7 +121,8 @@
       noNotificationsHint: "Windows' notification center is empty.",
       notificationsError: "Couldn't read the notifications",
       noReminders: "No reminders",
-      noRemindersHint: "Say “remind me in 10 minutes to…” or “wake me up at 7”.",
+      noRemindersHint: "Say “remind me in 10 minutes to…” or type one below.",
+      newReminder: "New reminder… e.g. “call mom tomorrow at 6pm”",
       today: "Today",
       tomorrow: "Tomorrow",
       alarm: "Alarm",
@@ -139,6 +145,10 @@
       allDoneHint: "Say “add a task: …” or type one below.",
       at: "at",
       complete: "Complete",
+      edit: "Edit",
+      save: "Save",
+      cancel: "Cancel",
+      clearDate: "Remove the date",
       activity: "Activity",
       byHour: "By hour",
       byDay: "By day",
@@ -314,8 +324,74 @@
     content = await invoke<Content>("add_task_text", { text });
   }
 
+  // Editing a task in place: its title, day and time.
+  let editingId = $state<number | null>(null);
+  let editTitle = $state("");
+  let editDate = $state("");
+  let editTime = $state("");
+
+  function startEdit(task: Task) {
+    editingId = task.id;
+    editTitle = task.title;
+    editDate = task.due_date ?? "";
+    editTime = task.due_time?.slice(0, 5) ?? "";
+  }
+
+  function cancelEdit() {
+    editingId = null;
+  }
+
+  function clearEditDate() {
+    editDate = "";
+    editTime = "";
+  }
+
+  async function saveEdit() {
+    if (editingId === null || !editTitle.trim()) return;
+    const id = editingId;
+    editingId = null;
+    content = await invoke<Content>("update_task", {
+      id,
+      title: editTitle.trim(),
+      date: editDate || null,
+      time: (editDate && editTime) || null,
+    });
+  }
+
+  function editKeydown(event: KeyboardEvent) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void saveEdit();
+    } else if (event.key === "Escape") {
+      // Leave the edit, not the whole panel.
+      event.stopPropagation();
+      cancelEdit();
+    }
+  }
+
+  function autofocus(node: HTMLInputElement) {
+    node.focus();
+    node.select();
+  }
+
+  let newReminder = $state("");
+  let reminderError = $state("");
+
+  async function addReminder(event: KeyboardEvent) {
+    if (event.key !== "Enter" || !newReminder.trim() || content?.kind !== "reminders") return;
+    try {
+      content = await invoke<Content>("add_reminder_text", { text: newReminder.trim(), lang: content.lang });
+      newReminder = "";
+      reminderError = "";
+    } catch (err) {
+      reminderError = String(err);
+    }
+  }
+
   function show(next: Content) {
     content = next;
+    editingId = null;
+    reminderError = "";
     showId += 1;
   }
 
@@ -550,8 +626,33 @@
                   <div
                     class="row task"
                     class:done={completing.includes(task.id)}
+                    class:editing={editingId === task.id}
                     out:fly={{ x: 24, duration: 260, easing: cubicOut }}
                   >
+                    {#if editingId === task.id}
+                      <input
+                        class="edit-title"
+                        type="text"
+                        spellcheck="false"
+                        autocomplete="off"
+                        bind:value={editTitle}
+                        onkeydown={editKeydown}
+                        use:autofocus
+                      />
+                      <div class="edit-when">
+                        <input type="date" bind:value={editDate} onkeydown={editKeydown} />
+                        <input type="time" bind:value={editTime} disabled={!editDate} onkeydown={editKeydown} />
+                        {#if editDate}
+                          <button class="clear-date" type="button" aria-label={t.clearDate} title={t.clearDate} onclick={clearEditDate}>
+                            <svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true"><line x1="3" y1="3" x2="9" y2="9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /><line x1="9" y1="3" x2="3" y2="9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
+                          </button>
+                        {/if}
+                      </div>
+                      <div class="edit-actions">
+                        <button class="text-button" type="button" onclick={cancelEdit}>{t.cancel}</button>
+                        <button class="text-button primary" type="button" disabled={!editTitle.trim()} onclick={saveEdit}>{t.save}</button>
+                      </div>
+                    {:else}
                     <button
                       class="check"
                       class:red={section.tone === "red"}
@@ -567,6 +668,10 @@
                         <span class="row-detail" class:late={section.tone === "red"}>{taskDueLabel(task)}</span>
                       {/if}
                     </div>
+                    <button class="edit" type="button" aria-label={t.edit} title={t.edit} onclick={() => startEdit(task)}>
+                      <svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M7.6 2.4l2 2L4.4 9.6 2 10l.4-2.4z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" /></svg>
+                    </button>
+                    {/if}
                   </div>
                 {/each}
               </div>
@@ -617,6 +722,22 @@
               autocomplete="off"
               bind:value={newTask}
               onkeydown={addTask}
+            />
+          </div>
+        {:else if content.kind === "reminders"}
+          {#if reminderError}
+            <p class="add-error">{reminderError}</p>
+          {/if}
+          <div class="add-task">
+            <svg viewBox="0 0 12 12" width="14" height="14" aria-hidden="true"><line x1="6" y1="2" x2="6" y2="10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /><line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
+            <input
+              type="text"
+              placeholder={t.newReminder}
+              spellcheck="false"
+              autocomplete="off"
+              bind:value={newReminder}
+              oninput={() => (reminderError = "")}
+              onkeydown={addReminder}
             />
           </div>
         {/if}
@@ -1135,6 +1256,129 @@
 
   .add-task input::placeholder {
     color: rgba(245, 245, 247, 0.38);
+  }
+
+  .add-error {
+    margin: 0 22px 8px;
+    font-size: 0.78rem;
+    color: #ff6961;
+  }
+
+  .edit {
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.07);
+    color: rgba(245, 245, 247, 0.55);
+    cursor: pointer;
+    opacity: 0.6;
+    transition:
+      background 0.15s ease,
+      color 0.15s ease,
+      opacity 0.15s ease;
+  }
+
+  .task:hover .edit,
+  .edit:focus-visible {
+    opacity: 1;
+  }
+
+  .edit:hover {
+    background: rgba(10, 132, 255, 0.2);
+    color: #0a84ff;
+  }
+
+  .task.editing {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .task.editing input {
+    min-width: 0;
+    border: none;
+    outline: none;
+    border-radius: 9px;
+    padding: 7px 10px;
+    background: rgba(255, 255, 255, 0.08);
+    color: #f5f5f7;
+    font: inherit;
+    font-size: 0.85rem;
+    color-scheme: dark;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  .task.editing input:focus {
+    box-shadow: 0 0 0 1.5px #0a84ff inset;
+  }
+
+  .task.editing input:disabled {
+    opacity: 0.4;
+  }
+
+  .edit-title {
+    font-weight: 600;
+  }
+
+  .edit-when {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .edit-when input[type="date"] {
+    flex: 1;
+  }
+
+  .edit-when input[type="time"] {
+    width: 96px;
+  }
+
+  .clear-date {
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.1);
+    color: rgba(245, 245, 247, 0.7);
+    cursor: pointer;
+  }
+
+  .edit-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+
+  .text-button {
+    border: none;
+    border-radius: 9px;
+    padding: 6px 12px;
+    background: rgba(255, 255, 255, 0.08);
+    color: #f5f5f7;
+    font: inherit;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .text-button.primary {
+    background: #0a84ff;
+  }
+
+  .text-button:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
 
   .empty {

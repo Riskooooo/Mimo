@@ -7,11 +7,15 @@
 
 pub mod activity;
 pub mod apps;
+pub mod capture;
+pub mod chat;
+pub mod custom;
 pub mod engine;
 pub mod error;
 pub mod info;
 pub mod intent;
 pub mod notifications;
+pub mod platforms;
 pub mod reminders;
 pub mod settings;
 pub mod shortcut;

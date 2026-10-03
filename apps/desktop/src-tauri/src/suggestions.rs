@@ -1,7 +1,8 @@
 //! Proactive suggestions (settings `suggestions_enabled` and
 //! `activity_enabled`, both on by default): once a minute, a
 //! background thread gathers what [`mimo_core::suggest::next`] needs —
-//! the last weeks of activity, what's in front, running apps, CPU/memory —
+//! the last weeks of activity, what's in front, running apps, CPU/memory,
+//! the battery, the recycle bin —
 //! and, if something is worth saying, brings the pill up *without taking
 //! focus* (so typing elsewhere isn't interrupted) with the suggestion and
 //! its buttons. What was shown/snoozed/muted is kept in `suggestions.json`.
@@ -10,10 +11,12 @@ use std::collections::{HashSet, VecDeque};
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::Local;
-use mimo_core::suggest::{self, Action, Context, History, Hog, LoadReading, Suggestion, ROUTINE_DAYS};
+use mimo_core::suggest::{
+    self, Action, Battery, Context, History, Hog, LoadReading, RecycleBin, Suggestion, ROUTINE_DAYS,
+};
 use mimo_core::{Engine, Settings};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 use tauri::{AppHandle, Emitter, Manager};
@@ -26,6 +29,8 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const READINGS: usize = 5;
 /// Heaviest apps considered for closing.
 const HOGS: usize = 8;
+/// Sizing up the recycle bin walks through it: not every minute.
+const RECYCLE_BIN_EVERY: Duration = Duration::from_secs(15 * 60);
 
 pub struct Suggestions {
     history: Mutex<History>,
@@ -50,6 +55,7 @@ impl Suggestions {
         let _ = std::thread::Builder::new().name("mimo-suggestions".into()).spawn(move || {
             let mut system = System::new();
             let mut readings: VecDeque<LoadReading> = VecDeque::new();
+            let mut recycle_bin: Option<(Instant, Option<RecycleBin>)> = None;
             loop {
                 std::thread::sleep(CHECK_EVERY);
                 let wanted = app.state::<Mutex<Settings>>().lock().expect("settings mutex poisoned").suggestions_enabled;
@@ -75,7 +81,11 @@ impl Suggestions {
                 while readings.len() > READINGS {
                     readings.pop_front();
                 }
-                check(&app, &system, readings.make_contiguous(), memory_percent);
+                if recycle_bin.as_ref().is_none_or(|(at, _)| at.elapsed() >= RECYCLE_BIN_EVERY) {
+                    recycle_bin = Some((Instant::now(), recycle_bin_contents()));
+                }
+                let bin = recycle_bin.as_ref().and_then(|(_, bin)| *bin);
+                check(&app, &system, readings.make_contiguous(), memory_percent, bin);
             }
         });
     }
@@ -126,7 +136,13 @@ impl Suggestions {
     }
 }
 
-fn check(app: &AppHandle, system: &System, readings: &[LoadReading], memory_percent: f32) {
+fn check(
+    app: &AppHandle,
+    system: &System,
+    readings: &[LoadReading],
+    memory_percent: f32,
+    recycle_bin: Option<RecycleBin>,
+) {
     // The pill is in use (or a suggestion is already up): not now.
     let busy = app.get_webview_window("main").is_some_and(|w| w.is_visible().unwrap_or(false));
     let suggestions = app.state::<Suggestions>();
@@ -163,6 +179,8 @@ fn check(app: &AppHandle, system: &System, readings: &[LoadReading], memory_perc
         memory_percent,
         hogs: &hogs,
         apps: &apps,
+        battery: battery(),
+        recycle_bin,
     };
     let mut history = suggestions.history.lock().expect("suggestions mutex poisoned");
     let Some(suggestion) = suggest::next(&ctx, &history) else { return };
@@ -229,5 +247,78 @@ fn run(action: &Action) -> Result<(), String> {
                 .map_err(|err| format!("can't run taskkill: {err}"))?;
             status.success().then_some(()).ok_or_else(|| format!("taskkill {process} failed: {status}"))
         }
+        Action::EmptyRecycleBin => {
+            const SHERB_NOCONFIRMATION: u32 = 0x1;
+            const SHERB_NOPROGRESSUI: u32 = 0x2;
+            // All drives; Windows plays its usual "emptied" sound.
+            let result = unsafe {
+                SHEmptyRecycleBinW(std::ptr::null_mut(), std::ptr::null(), SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI)
+            };
+            (result >= 0).then_some(()).ok_or_else(|| format!("emptying the recycle bin failed: {result:#x}"))
+        }
+    }
+}
+
+/// The battery's charge, from `GetSystemPowerStatus` (instant, no WMI).
+/// `None` on a desktop without a battery, or when Windows doesn't know.
+fn battery() -> Option<Battery> {
+    const NO_BATTERY: u8 = 128;
+    const UNKNOWN: u8 = 255;
+    let mut status = SystemPowerStatus::default();
+    if unsafe { GetSystemPowerStatus(&mut status) } == 0
+        || status.battery_flag & NO_BATTERY != 0
+        || status.battery_flag == UNKNOWN
+        || status.battery_life_percent > 100
+    {
+        return None;
+    }
+    Some(Battery { percent: status.battery_life_percent, plugged: status.ac_line_status == 1 })
+}
+
+/// What's in the recycle bin, all drives together.
+fn recycle_bin_contents() -> Option<RecycleBin> {
+    let mut info = ShQueryRbInfo { size: std::mem::size_of::<ShQueryRbInfo>() as u32, ..Default::default() };
+    let result = unsafe { SHQueryRecycleBinW(std::ptr::null(), &mut info) };
+    (result >= 0).then(|| RecycleBin { bytes: info.bytes.max(0) as u64, items: info.items.max(0) as u64 })
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct SystemPowerStatus {
+    ac_line_status: u8,
+    battery_flag: u8,
+    battery_life_percent: u8,
+    system_status_flag: u8,
+    battery_life_time: u32,
+    battery_full_life_time: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct ShQueryRbInfo {
+    size: u32,
+    bytes: i64,
+    items: i64,
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetSystemPowerStatus(status: *mut SystemPowerStatus) -> i32;
+}
+
+#[link(name = "shell32")]
+extern "system" {
+    fn SHQueryRecycleBinW(root_path: *const u16, info: *mut ShQueryRbInfo) -> i32;
+    fn SHEmptyRecycleBinW(hwnd: *mut std::ffi::c_void, root_path: *const u16, flags: u32) -> i32;
+}
+
+#[cfg(test)]
+mod tests {
+    /// `cargo test -p desktop print_power_and_recycle_bin -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn print_power_and_recycle_bin() {
+        println!("battery: {:?}", super::battery());
+        println!("recycle bin: {:?}", super::recycle_bin_contents());
     }
 }

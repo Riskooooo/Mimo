@@ -11,22 +11,28 @@ The project is in early development. Mimo already understands typed and spoken r
 ## Features
 
 - **Floating pill** - borderless window at the top-center of the screen, responsive to screen size/DPI, auto-hides when idle, with a system tray icon and a right-click quick menu
-- **Summon** - global shortcut (`F9` by default, configurable) for a typed request, or say "Hey Mimo" for a spoken one
+- **Summon** - global shortcut (`F9` by default, any key or combination you like) for a typed request, or say "Hey Mimo" for a spoken one
 - **Offline voice recognition** - [Vosk](https://alphacephei.com/vosk/) runs entirely on the machine; only the model for the selected language is loaded
 - **Open apps and sites** - installed Start menu apps (desktop and Store), common websites and built-in Windows programs, by name ("open spotify", "ouvre youtube")
+- **Search on platforms** - "mets squeezie sur youtube", "gotaga sur twitch", "damso feu de bois sur spotify", "ouvre spotify et affiche damso", "the latest video from inoxtag" - straight to the right page (YouTube, Twitch, Spotify app or web, Deezer, Netflix, Google Maps, Amazon, TikTok, X, Reddit…)
 - **Quick answers** - time, date and weather (for your area or a named city)
 - **PC check-up** - CPU, memory, disk, temperature, battery and GPU readings with plain-language advice, shown in a dedicated panel
 - **Notifications** - lists recent Windows notifications, and reads them aloud when asked by voice
-- **Reminders and alarms** - "remind me in 10 minutes to...", "set an alarm for 7:30"
-- **Tasks** - a simple to-do list with optional days and times, managed by voice or text
+- **Reminders and alarms** - "remind me in 10 minutes to...", "set an alarm for 7:30", or typed straight into the reminders panel ("call mom tomorrow at 6pm")
+- **Tasks** - a simple to-do list with optional days and times, managed by voice or text, each task editable in place (title, day, time)
+- **Screenshots and screen recordings** - "take a screenshot" (PNG in `Pictures\Mimo Capture`), "record the screen" / "stop recording" (MP4 in `Videos\Mimo Records`); the pill never shows up in them
+- **Small talk** - say hi, ask how it's going, say thanks or good night: Mimo answers back
+- **Help** - "I need help" asks whether it's an emergency (with the emergency numbers) or a question about Mimo (links to this repository); the pill's "?" button and the tray menu's "A problem?" lead here too
+- **Your own commands** - in the settings, "My commands" lets you choose what a phrase does: a reply, a website, an installed app or another request
 - **Translation** - translate typed text, or whatever you copy next, between French and English
 - **Activity insights** - learns which apps you use and when (stored only on your PC, 30 days); ask for your screen time or a summary of your day
-- **Suggestions** - offers on its own to open the apps you usually start around this time, to close an app that's slowing the PC down, to take a break or to go to bed - never over a fullscreen game or video, never stealing focus
-- **Settings** - language (English / French), launch at Windows startup, summon shortcut, "Hey Mimo" on/off, activity analysis and suggestions on/off (separately), sounds, erase all local data
+- **Suggestions** - offers on its own to open the apps you usually start around this time, to close an app that's slowing the PC down, to empty a full recycle bin, to take a break or to go to bed - never over a fullscreen game or video (except a low battery warning), never stealing focus
+- **Low battery** - reminds you to plug in the charger at 20 %, more urgently at 10 %
+- **Settings** - language (English / French), launch at Windows startup, summon shortcut, "Hey Mimo" on/off, activity analysis and suggestions on/off (separately), sounds, your own commands, erase all local data; the version is shown at the bottom
 
 ## Privacy
 
-Mimo has no telemetry and keeps its data (settings, reminders, tasks, activity history) on the PC. Voice recognition is fully offline. The only network requests are:
+Mimo has no telemetry and keeps its data (settings, reminders, tasks, your commands, activity history) on the PC; screenshots and recordings are saved to your own Pictures and Videos folders. Voice recognition is fully offline. The only network requests are:
 
 - opening the URLs you ask for
 - weather: [Open-Meteo](https://open-meteo.com/) for the forecast and city lookup, and [ipwho.is](https://ipwho.is/) to approximate your location from your IP when no city is given
@@ -36,9 +42,9 @@ Mimo has no telemetry and keeps its data (settings, reminders, tasks, activity h
 
 The project is a Cargo workspace, split so the core logic stays independent of the UI:
 
-- `crates/core` (`mimo-core`) - engine, settings and all the logic: request parsing (FR/EN), app matching, reminders, tasks, check-up advice. No Tauri dependency, unit-testable on its own.
+- `crates/core` (`mimo-core`) - engine, settings and all the logic: request parsing (FR/EN), platform searches, small talk, your own commands, app matching, reminders, tasks, check-up advice, suggestions. No Tauri dependency, unit-testable on its own.
 - `crates/commands` (`mimo-commands`) - thin bridge exposing `mimo-core` to the frontend as Tauri commands.
-- `apps/desktop` - the Tauri shell: Svelte/TypeScript frontend (pill, tray menu, panel), window management, and OS integration (voice, sounds, installed apps, notifications, system readings, persistence).
+- `apps/desktop` - the Tauri shell: Svelte/TypeScript frontend (pill, tray menu, panel, commands window), window management, and OS integration (voice, sounds, installed apps, notifications, system readings, screen capture, persistence).
 
 This separation means the core engine can evolve, be tested, and eventually be reused without being coupled to how the UI is built.
 
@@ -59,6 +65,13 @@ npm run tauri dev
 ```
 
 `npm run tauri dev` first runs `npm run setup:voice`, which downloads the Vosk runtime and the French/English models into `src-tauri/resources/vosk/` (once; it is skipped when they are already there). The app still starts without them, with voice disabled.
+
+Build the installer (`target/release/bundle/nsis/Mimo_<version>_x64-setup.exe`, per-user, voice models included):
+
+```bash
+cd apps/desktop
+npm run tauri build
+```
 
 Run the tests (from the repository root):
 

@@ -18,6 +18,7 @@ use mimo_core::Lang;
 use mimo_core::{Engine, Intent};
 
 use crate::activity::{midnight, Activity};
+use crate::capture::Recorder;
 use crate::panel::{self, lang_code, Panel, PanelContent};
 use crate::reminders::Reminders;
 use crate::tasks::Tasks;
@@ -46,6 +47,8 @@ pub fn hide_window(app: AppHandle) {
 
 #[tauri::command]
 pub fn quit_app(app: AppHandle) {
+    // Finish a recording in progress, or its file would be unreadable.
+    let _ = app.state::<Recorder>().stop(&app);
     app.exit(0);
 }
 
@@ -87,9 +90,9 @@ pub fn set_summon_shortcut(
     let french = mimo_core::Lang::from_code(&guard.language) == mimo_core::Lang::Fr;
     if mimo_core::validate_shortcut(&shortcut).is_err() {
         return Err(if french {
-            "Ajoute Ctrl, Alt ou Win, ou choisis une touche F1–F24.".to_string()
+            "Raccourci invalide, essaie une autre touche.".to_string()
         } else {
-            "Add Ctrl, Alt or Win, or pick a function key (F1–F24).".to_string()
+            "Invalid shortcut, try another key.".to_string()
         });
     }
     if guard.summon_shortcut.eq_ignore_ascii_case(&shortcut) {
@@ -244,13 +247,19 @@ pub fn erase_memory(
     app.state::<Tasks>().clear();
     app.state::<Activity>().forget();
     app.state::<Suggestions>().forget();
+    app.state::<crate::custom::CustomCommands>().forget(&app);
 
     if let Ok(dir) = app.path().app_data_dir() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    let mut guard = settings.lock().expect("settings mutex poisoned");
+    // Back to the defaults, which turn listening and activity analysis on:
+    // restart them, or the toggles would show "on" with nothing running.
     let defaults = Settings::default();
+    voice.set_enabled(&app, defaults.voice_wake_enabled);
+    app.state::<Activity>().set_enabled(defaults.activity_enabled);
+
+    let mut guard = settings.lock().expect("settings mutex poisoned");
     if !guard.summon_shortcut.eq_ignore_ascii_case(&defaults.summon_shortcut) {
         let global = app.global_shortcut();
         let _ = global.unregister(guard.summon_shortcut.as_str());
@@ -371,6 +380,7 @@ fn handle_request(app: &AppHandle, request: &str, spoken: bool) -> AskResponseDt
         }
         Intent::Task { command, lang } => handle_task(app, command, lang),
         Intent::Activity { query, lang } => handle_activity(app, query, lang),
+        Intent::Capture { command, lang } => handle_capture(app, command, lang),
         Intent::Translate { request, lang } => match request {
             TranslateRequest::Text { text, target } => match crate::translate::translate(&text, lang, target) {
                 Ok(translation) => AskResponseDto {
@@ -389,6 +399,31 @@ fn handle_request(app: &AppHandle, request: &str, spoken: bool) -> AskResponseDt
             }
         },
         other => mimo_commands::execute(app, &other),
+    }
+}
+
+fn handle_capture(app: &AppHandle, command: mimo_core::capture::CaptureCommand, lang: Lang) -> AskResponseDto {
+    use mimo_core::capture::*;
+    let recorder = app.state::<Recorder>();
+    let failed = |err: String, recording: bool| {
+        eprintln!("[capture] {err}");
+        AskResponseDto::failed_answer(format_failed(lang, recording))
+    };
+    match command {
+        CaptureCommand::Screenshot => match crate::capture::screenshot(app) {
+            Ok(_) => AskResponseDto::answer(format_screenshot_saved(lang)),
+            Err(err) => failed(err, false),
+        },
+        CaptureCommand::StartRecording => match recorder.start(app) {
+            Ok(true) => AskResponseDto::answer(format_recording_started(lang)),
+            Ok(false) => AskResponseDto::failed_answer(format_already_recording(lang)),
+            Err(err) => failed(err, true),
+        },
+        CaptureCommand::StopRecording => match recorder.stop(app) {
+            Ok(Some((_, length))) => AskResponseDto::answer(format_recording_saved(lang, length.as_secs())),
+            Ok(None) => AskResponseDto::failed_answer(format_not_recording(lang)),
+            Err(err) => failed(err, true),
+        },
     }
 }
 
@@ -489,6 +524,60 @@ pub fn add_task_text(app: AppHandle, text: String) -> PanelContent {
     let content = tasks_content(&app, app_language(&app));
     *app.state::<Panel>().current_mut() = Some(content.clone());
     content
+}
+
+/// Saves a task edited in the panel. `date` is "2026-10-03", `time`
+/// "14:00" (both optional; a time without a date is dropped).
+#[tauri::command]
+pub fn update_task(app: AppHandle, id: u64, title: String, date: Option<String>, time: Option<String>) -> PanelContent {
+    let title = title.trim();
+    if !title.is_empty() {
+        let date = date.and_then(|d| chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok());
+        let time = time.and_then(|t| chrono::NaiveTime::parse_from_str(&t, "%H:%M").ok());
+        app.state::<Tasks>().update(id, title.to_string(), date, time);
+    }
+    let content = tasks_content(&app, app_language(&app));
+    *app.state::<Panel>().current_mut() = Some(content.clone());
+    content
+}
+
+/// Adds a reminder typed in the panel ("appeler maman demain à 18h").
+/// Fails with a hint when there's no moment or it has already passed.
+#[tauri::command]
+pub fn add_reminder_text(app: AppHandle, text: String, lang: String) -> Result<PanelContent, String> {
+    use chrono::TimeZone;
+    use mimo_core::reminders::{parse_new_reminder, ReminderTime};
+    let french = lang != "en";
+    let now = chrono::Local::now();
+    let Some(new) = parse_new_reminder(&text) else {
+        return Err(if french {
+            "Précise quand : « dans 10 min », « demain à 9 h »…".to_string()
+        } else {
+            "Say when: “in 10 min”, “tomorrow at 9am”…".to_string()
+        });
+    };
+    let due = match new.time {
+        ReminderTime::In { seconds } => now.timestamp() + seconds as i64,
+        ReminderTime::On(due) => {
+            let (date, time) = due.resolve(now.naive_local());
+            let date = date.unwrap_or(now.date_naive());
+            // A day alone ("vendredi") rings in the morning.
+            let time = time.unwrap_or(chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("valid time"));
+            chrono::Local
+                .from_local_datetime(&date.and_time(time))
+                .earliest()
+                .map(|t| t.timestamp())
+                .unwrap_or(0)
+        }
+    };
+    if due <= now.timestamp() {
+        return Err(if french { "Ce moment est déjà passé.".to_string() } else { "That time has already passed.".to_string() });
+    }
+    let reminders = app.state::<Reminders>();
+    reminders.add_at(new.kind, due, new.message);
+    let content = PanelContent::Reminders { lang: if french { "fr" } else { "en" }, items: reminders.list() };
+    *app.state::<Panel>().current_mut() = Some(content.clone());
+    Ok(content)
 }
 
 /// Waits for the user to copy some text, then translates it.

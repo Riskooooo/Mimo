@@ -2,6 +2,8 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { getVersion } from "@tauri-apps/api/app";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import { onMount } from "svelte";
   import { fade } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
@@ -36,6 +38,7 @@
       shortcut: "Open Mimo shortcut",
       changeShortcut: "Change the shortcut that opens Mimo",
       pressKeys: "Press keys…",
+      bareKeyNote: "This key can't be typed anywhere else while Mimo runs.",
       voiceWake: "Listen for “Hey Mimo”",
       language: "Language",
       sounds: "Sounds",
@@ -44,10 +47,18 @@
       suggestion: "Suggestion",
       open: "Open",
       closeApp: "Close it",
+      emptyBin: "Empty it",
+      myCommands: "My commands",
+      manage: "Manage",
       ok: "OK",
       later: "Later",
       never: "Don't suggest again",
       eraseMemory: "Erase memory",
+      help: "Help",
+      helpQuestion: "Question about Mimo",
+      helpEmergency: "I need emergency help",
+      emergency: "In an emergency, call 911 (US) or 112 (Europe) right away.",
+      version: "Version",
     },
     fr: {
       loading: "Chargement…",
@@ -64,6 +75,7 @@
       shortcut: "Raccourci pour ouvrir Mimo",
       changeShortcut: "Changer le raccourci qui ouvre Mimo",
       pressKeys: "Appuie sur une touche…",
+      bareKeyNote: "Cette touche ne pourra plus être tapée ailleurs tant que Mimo tourne.",
       voiceWake: "Écouter « Hey Mimo »",
       language: "Langue",
       sounds: "Sons",
@@ -72,10 +84,18 @@
       suggestion: "Suggestion",
       open: "Ouvrir",
       closeApp: "Le fermer",
+      emptyBin: "La vider",
+      myCommands: "Mes commandes",
+      manage: "Gérer",
       ok: "OK",
       later: "Plus tard",
       never: "Ne plus proposer",
       eraseMemory: "Effacer la mémoire",
+      help: "Aide",
+      helpQuestion: "Question sur Mimo",
+      helpEmergency: "J'ai besoin des secours",
+      emergency: "En cas d'urgence, appelle tout de suite le 112 (ou le 15 SAMU, 17 police, 18 pompiers).",
+      version: "Version",
     },
   };
   type Translation = { original: string; translated: string; from: string; to: string };
@@ -85,6 +105,7 @@
     answer: boolean;
     translation: Translation | null;
     awaiting_copy: boolean;
+    help: boolean;
   };
   type VoiceResult = { text: string | null; error: string | null };
   // "reminder": brought up by a due reminder/alarm (mode comes with the
@@ -99,6 +120,7 @@
     action:
       | { kind: "launch"; apps: { name: string; app_id: string }[] }
       | { kind: "close"; label: string; process: string }
+      | { kind: "empty_recycle_bin" }
       | null;
   };
   type SuggestionChoice = "accept" | "later" | "never" | "dismiss";
@@ -159,6 +181,9 @@
 
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+  // The "?" button and "I need help" lead to the project's page.
+  const GITHUB_URL = "https://github.com/Riskooooo/Mimo";
+
   type Stage = "collapsed" | "compact" | "full";
   type Phase = "loading" | "ready" | "closing";
   // What the ready pill is doing: plain status bar, typed prompt, waiting
@@ -175,7 +200,8 @@
     | "ringing"
     | "copywait"
     | "translation"
-    | "suggestion";
+    | "suggestion"
+    | "help";
 
   let stage = $state<Stage>("collapsed");
   let phase = $state<Phase>("loading");
@@ -202,6 +228,17 @@
   let promptInput = $state<HTMLInputElement>();
   let capturingShortcut = $state(false);
   let shortcutError = $state("");
+  // Shown right after binding a key without Ctrl/Alt/Win (allowed, but the
+  // key is then grabbed system-wide).
+  let shortcutNote = $state("");
+  // Accelerators name physical keys (QWERTY positions: "Q" is the key
+  // labelled A on AZERTY), so they're shown through the user's layout.
+  let layoutMap = $state<Map<string, string> | null>(null);
+  try {
+    (navigator as any).keyboard?.getLayoutMap?.().then((map: Map<string, string>) => (layoutMap = map), () => {});
+  } catch {
+    // Keyboard Map API unavailable: shortcuts show their QWERTY names.
+  }
   let voiceError = $state("");
   let ringing = $state<Ringing | null>(null);
   let ringTimers: ReturnType<typeof setTimeout>[] = [];
@@ -210,6 +247,11 @@
   let copied = $state(false);
   let translationTimer: ReturnType<typeof setTimeout> | undefined;
   let suggestion = $state<Suggestion | null>(null);
+  // "J'ai besoin d'aide": the question asked, then the emergency numbers
+  // if that's what it is (shown in the suggestion drawer).
+  let helpText = $state("");
+  let helpEmergency = $state(false);
+  let appVersion = $state("");
   let suggestionOpen = $state(false);
   let suggestionTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -246,7 +288,7 @@
     if (mode === "idle") cancelIdleHide();
     // Reading the translation or suggestion: keep it up.
     if (mode === "translation") clearTimeout(translationTimer);
-    if (mode === "suggestion") clearTimeout(suggestionTimer);
+    if (mode === "suggestion" || mode === "help") clearTimeout(suggestionTimer);
   }
 
   function handlePointerLeave() {
@@ -254,6 +296,7 @@
     if (mode === "idle") armIdleHide();
     if (mode === "translation") armTranslationHide();
     if (mode === "suggestion") armSuggestionHide();
+    if (mode === "help") armHelpHide();
   }
 
   async function playInitialReveal() {
@@ -385,6 +428,10 @@
         await translateNextCopy();
         return;
       }
+      if (response.help) {
+        await showHelp(response.reply);
+        return;
+      }
     } catch (err) {
       reply = String(err);
     }
@@ -499,9 +546,36 @@
     await handleMinimize();
   }
 
+  async function showHelp(question: string) {
+    helpText = question;
+    helpEmergency = false;
+    replyOk = true;
+    mode = "help";
+    sound("success");
+    await invoke("set_pill_drawer", { height: SUGGESTION_DRAWER_HEIGHT });
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        suggestionOpen = true;
+      });
+    });
+    armHelpHide();
+  }
+
+  function armHelpHide() {
+    clearTimeout(suggestionTimer);
+    if (mode !== "help" || pointerInside) return;
+    suggestionTimer = setTimeout(() => void handleMinimize(), SUGGESTION_LINGER_MS);
+  }
+
+  async function openHelpPage() {
+    await openUrl(GITHUB_URL);
+    if (mode === "help") await handleMinimize();
+  }
+
   function acceptLabel(next: Suggestion) {
     if (next.action?.kind === "launch") return t.open;
     if (next.action?.kind === "close") return t.closeApp;
+    if (next.action?.kind === "empty_recycle_bin") return t.emptyBin;
     return t.ok;
   }
 
@@ -663,11 +737,13 @@
     if (language === settings.language) return;
     voiceError = "";
     shortcutError = "";
+    shortcutNote = "";
     settings = await invoke<AppSettings>("set_language", { language });
   }
 
   function startShortcutCapture() {
     shortcutError = "";
+    shortcutNote = "";
     capturingShortcut = true;
   }
 
@@ -678,6 +754,17 @@
     if (code.startsWith("Key")) return code.slice(3);
     if (code.startsWith("Digit")) return code.slice(5);
     return code;
+  }
+
+  function shortcutLabel(shortcut: string): string {
+    return shortcut
+      .split("+")
+      .map((part) => {
+        const code = /^[A-Z]$/.test(part) ? `Key${part}` : /^[0-9]$/.test(part) ? `Digit${part}` : part;
+        const shown = layoutMap?.get(code)?.trim();
+        return shown ? shown.toUpperCase() : part;
+      })
+      .join("+");
   }
 
   async function handleShortcutCapture(event: KeyboardEvent) {
@@ -713,6 +800,8 @@
     capturingShortcut = false;
     try {
       settings = await invoke<AppSettings>("set_summon_shortcut", { shortcut: parts.join("+") });
+      const grabsTyping = !(event.ctrlKey || event.altKey || event.metaKey) && !/^F([1-9]|1[0-9]|2[0-4])$/.test(key);
+      shortcutNote = grabsTyping ? t.bareKeyNote : "";
     } catch (err) {
       shortcutError = String(err);
     }
@@ -721,11 +810,13 @@
   async function handleEraseMemory() {
     voiceError = "";
     shortcutError = "";
+    shortcutNote = "";
     settings = await invoke<AppSettings>("erase_memory");
   }
 
   onMount(() => {
     void playInitialReveal();
+    void getVersion().then((version) => (appVersion = version));
     void invoke<AppSettings>("get_settings").then((loaded) => {
       settings = loaded;
     });
@@ -878,6 +969,12 @@
         </div>
 
         <div class="actions" class:visible={showControls && mode === "idle"}>
+          <button class="action" type="button" aria-label={t.help} title={t.help} onclick={() => void openUrl(GITHUB_URL)}>
+            <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
+              <path d="M4.1 4.3a1.95 1.95 0 1 1 2.8 1.75c-.6.3-.9.7-.9 1.3v.35" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+              <circle cx="6" cy="9.7" r=".85" fill="currentColor" />
+            </svg>
+          </button>
           <button class="action" type="button" aria-label={t.settings} onclick={toggleSettings}>
             <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
               <line x1="1" y1="3" x2="11" y2="3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
@@ -926,6 +1023,8 @@
               <span class="label prompt-text">{t.translation}</span>
             {:else if mode === "suggestion"}
               <span class="label prompt-text">{t.suggestion}</span>
+            {:else if mode === "help"}
+              <span class="label prompt-text">{t.help}</span>
             {:else if mode === "ringing" && ringing}
               <span class="label prompt-text ring-text">
                 <span class="ring-time">{ringing.time}</span>
@@ -953,7 +1052,17 @@
       </div>
 
       <div class="suggestion-panel" class:open={suggestionOpen}>
-        {#if suggestion}
+        {#if mode === "help"}
+          <p class="suggestion-text">{helpEmergency ? t.emergency : helpText}</p>
+          <div class="suggestion-actions">
+            {#if helpEmergency}
+              <button class="suggestion-button primary" type="button" onclick={handleMinimize}>{t.ok}</button>
+            {:else}
+              <button class="suggestion-button primary" type="button" onclick={openHelpPage}>{t.helpQuestion}</button>
+              <button class="suggestion-button danger" type="button" onclick={() => (helpEmergency = true)}>{t.helpEmergency}</button>
+            {/if}
+          </div>
+        {:else if suggestion}
           <p class="suggestion-text">{suggestion.message}</p>
           <div class="suggestion-actions">
             <button class="suggestion-button primary" type="button" onclick={() => answerSuggestion("accept")}>
@@ -989,7 +1098,7 @@
             aria-label={t.changeShortcut}
             onclick={startShortcutCapture}
           >
-            {capturingShortcut ? t.pressKeys : settings.summon_shortcut}
+            {capturingShortcut ? t.pressKeys : shortcutLabel(settings.summon_shortcut)}
           </button>
         </div>
         <div class="settings-row">
@@ -1067,10 +1176,17 @@
             <span class="switch-knob"></span>
           </button>
         </div>
-        {#if shortcutError || (settings.voice_wake_enabled && voiceError)}
-          <p class="settings-hint">{shortcutError || voiceError}</p>
+        <div class="settings-row">
+          <span class="settings-label">{t.myCommands}</span>
+          <button class="keycap" type="button" onclick={() => void invoke("open_commands_window")}>{t.manage}</button>
+        </div>
+        {#if shortcutError || shortcutNote || (settings.voice_wake_enabled && voiceError)}
+          <p class="settings-hint">{shortcutError || shortcutNote || voiceError}</p>
         {/if}
-        <button class="settings-action" type="button" onclick={handleEraseMemory}>{t.eraseMemory}</button>
+        <div class="settings-footer">
+          <button class="settings-action" type="button" onclick={handleEraseMemory}>{t.eraseMemory}</button>
+          {#if appVersion}<span class="version">{t.version} {appVersion}</span>{/if}
+        </div>
       </div>
     {/if}
   </div>
@@ -1164,9 +1280,9 @@
   /* Grows downward to reveal .settings-panel. The window is resized to fit
      this *before* the class is added (see openSettings in the script), so
      the extra room already exists and this is a pure CSS-driven grow —
-     matches SETTINGS_PANEL_HEIGHT (326) + the base 44px in src-tauri/src/lib.rs. */
+     matches SETTINGS_PANEL_HEIGHT (357) + the base 44px in src-tauri/src/lib.rs. */
   .pill.full.settings-open {
-    height: 370px;
+    height: 401px;
     border-radius: 28px;
   }
 
@@ -1644,7 +1760,7 @@
   }
 
   .settings-panel.open {
-    flex-basis: 326px;
+    flex-basis: 357px;
     opacity: 1;
     pointer-events: auto;
   }
@@ -1803,6 +1919,34 @@
     font-weight: 600;
     cursor: pointer;
     transition: background 0.15s ease;
+  }
+
+  .settings-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .version {
+    color: rgba(245, 245, 247, 0.38);
+    font-family:
+      -apple-system,
+      "SF Pro Display",
+      "Segoe UI",
+      Inter,
+      sans-serif;
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .suggestion-button.danger {
+    background: rgba(255, 69, 58, 0.18);
+    color: #ff6961;
+  }
+
+  .suggestion-button.danger:hover {
+    background: rgba(255, 69, 58, 0.3);
   }
 
   .settings-action:hover {

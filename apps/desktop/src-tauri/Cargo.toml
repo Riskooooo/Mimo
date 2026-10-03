@@ -32,5 +32,6 @@ sysinfo = "0.39"
 rusqlite = { version = "0.40", features = ["bundled"] }
 ureq = "3"
 arboard = "3"
+windows-capture = "2"
 mimo-core = { path = "../../../crates/core" }
 mimo-commands = { path = "../../../crates/commands" }

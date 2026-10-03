@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use chrono::{Local, NaiveDateTime};
+use chrono::{Local, NaiveDate, NaiveDateTime, NaiveTime};
 use mimo_core::tasks::{Due, Task, TaskStore};
 use tauri::{AppHandle, Manager};
 
@@ -39,6 +39,10 @@ impl Tasks {
 
     pub fn add(&self, title: String, due: Due) -> Task {
         self.mutate(|store| store.add(title, due, now()))
+    }
+
+    pub fn update(&self, id: u64, title: String, date: Option<NaiveDate>, time: Option<NaiveTime>) -> Option<Task> {
+        self.mutate(|store| store.update(id, title, date, time))
     }
 
     pub fn remove(&self, id: u64) -> Option<Task> {

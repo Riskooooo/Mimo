@@ -1,5 +1,6 @@
 use crate::error::CoreError;
 use crate::apps::AppCatalog;
+use crate::custom::{self, CustomAction, CustomCommand};
 use crate::info::Lang;
 use crate::intent::{self, Intent};
 
@@ -19,6 +20,8 @@ pub struct Engine {
     apps: AppCatalog,
     /// The app's language: what replies are written in.
     language: Lang,
+    /// The user's own commands, checked before everything else.
+    custom: Vec<CustomCommand>,
 }
 
 impl Engine {
@@ -27,6 +30,7 @@ impl Engine {
             running: false,
             apps: AppCatalog::default(),
             language: Lang::default(),
+            custom: Vec::new(),
         }
     }
 
@@ -40,7 +44,19 @@ impl Engine {
         if !self.running {
             return Err(CoreError::NotRunning);
         }
+        if let Some(command) = custom::find(&self.custom, request) {
+            return Ok(match &command.action {
+                // Handled like the request it stands for (never another
+                // custom command, so no loops).
+                CustomAction::Request { text } => intent::parse_in(text, &self.apps, Some(self.language)),
+                action => Intent::Custom { action: action.clone(), lang: self.language },
+            });
+        }
         Ok(intent::parse_in(request, &self.apps, Some(self.language)))
+    }
+
+    pub fn set_custom_commands(&mut self, commands: Vec<CustomCommand>) {
+        self.custom = commands;
     }
 
     /// Replaces the known installed apps; `true` if the list changed.
@@ -64,7 +80,9 @@ impl Engine {
 
     /// Phrases voice recognition should expect, installed apps included.
     pub fn voice_phrases(&self, language: &str) -> Vec<String> {
-        intent::voice_phrases(language, &self.apps)
+        let mut phrases = intent::voice_phrases(language, &self.apps);
+        phrases.extend(self.custom.iter().map(custom::voice_phrase).filter(|p| !p.is_empty()));
+        phrases
     }
 
     pub fn status(&self) -> EngineStatus {

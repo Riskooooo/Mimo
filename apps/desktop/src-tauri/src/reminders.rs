@@ -90,10 +90,15 @@ impl Reminders {
                     .unwrap_or(now)
             }
         };
-        self.mutate(|store| {
-            store.add(kind, due.timestamp(), message);
-        });
+        self.add_at(kind, due.timestamp(), message);
         (due.hour(), due.minute())
+    }
+
+    /// Schedules a reminder at a unix time (typed in the panel).
+    pub fn add_at(&self, kind: ReminderKind, due: i64, message: Option<String>) {
+        self.mutate(|store| {
+            store.add(kind, due, message);
+        });
     }
 
     pub fn list(&self) -> Vec<Reminder> {

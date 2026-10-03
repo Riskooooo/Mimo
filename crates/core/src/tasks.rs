@@ -184,15 +184,21 @@ pub fn parse_new_task(text: &str) -> Option<(String, Due)> {
 }
 
 /// The tokens of a request together with its original text.
-struct Words<'a> {
-    input: &'a str,
-    tokens: Vec<Token>,
+pub(crate) struct Words<'a> {
+    pub input: &'a str,
+    pub tokens: Vec<Token>,
+}
+
+impl<'a> Words<'a> {
+    pub fn new(input: &'a str) -> Self {
+        Self { input, tokens: tokenize_spans(input) }
+    }
 }
 
 /// The words left once `drop` lists and the due-date tokens are removed,
 /// trimmed of fillers at both ends, in their original spelling: words that
 /// were next to each other keep what separated them ("l'examen").
-fn remainder(words: &Words, drop: &[&[&str]], due_tokens: Option<&[usize]>) -> Option<String> {
+pub(crate) fn remainder(words: &Words, drop: &[&[&str]], due_tokens: Option<&[usize]>) -> Option<String> {
     let kept: Vec<usize> = (0..words.tokens.len())
         .filter(|i| {
             let t = words.tokens[*i].folded.as_str();
@@ -218,7 +224,7 @@ fn remainder(words: &Words, drop: &[&[&str]], due_tokens: Option<&[usize]>) -> O
     Some(out)
 }
 
-fn capitalize(s: &str) -> String {
+pub(crate) fn capitalize(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
@@ -250,7 +256,7 @@ const FR_MONTH_NAMES: [&str; 12] = [
 const DUE_LEAD: &[&str] = &["pour", "a", "at", "on", "by", "le", "ce", "cette", "this", "next", "prochain", "avant", "before", "d", "ici", "vers", "around", "for"];
 
 /// Finds the day and time in a request, and which tokens they span.
-fn find_due(words: &Words) -> (Due, Vec<usize>) {
+pub(crate) fn find_due(words: &Words) -> (Due, Vec<usize>) {
     let tokens: Vec<String> = words.tokens.iter().map(|t| t.folded.clone()).collect();
     let word = |i: usize| tokens.get(i).map(String::as_str);
     let mut due = Due::default();
@@ -352,6 +358,18 @@ impl TaskStore {
     /// Overdue and dated first (soonest first), undated last.
     fn sort(&mut self) {
         self.tasks.sort_by_key(|t| (t.due_date.is_none(), t.due_date, t.due_time.is_none(), t.due_time, t.id));
+    }
+
+    /// Replaces a task's title and due date/time (edited in the panel).
+    pub fn update(&mut self, id: u64, title: String, due_date: Option<NaiveDate>, due_time: Option<NaiveTime>) -> Option<Task> {
+        let task = self.tasks.iter_mut().find(|t| t.id == id)?;
+        task.title = title;
+        task.due_date = due_date;
+        // A time alone has no day to belong to.
+        task.due_time = due_date.and(due_time);
+        let task = task.clone();
+        self.sort();
+        Some(task)
     }
 
     pub fn remove(&mut self, id: u64) -> Option<Task> {
@@ -576,5 +594,20 @@ mod tests {
         let task = Task { id: 1, title: "x".into(), due_date: date(3, 10), due_time: time(14, 0) };
         assert_eq!(format_due(&task, now(), Lang::Fr).as_deref(), Some("demain à 14:00"));
         assert_eq!(format_due(&task, now(), Lang::En).as_deref(), Some("tomorrow at 2:00 PM"));
+    }
+
+    #[test]
+    fn editing_a_task_keeps_the_list_sorted() {
+        let mut store = TaskStore::default();
+        let first = store.add("Courses".into(), Due::default(), now());
+        store.add("Plombier".into(), Due { day: Some(DayRef::Tomorrow), time: None }, now());
+        let date = NaiveDate::from_ymd_opt(2026, 10, 2);
+        let edited = store.update(first.id, "Courses bio".into(), date, NaiveTime::from_hms_opt(9, 0, 0)).unwrap();
+        assert_eq!(edited.title, "Courses bio");
+        assert_eq!(store.tasks[0].id, first.id, "now dated today, so first");
+        // A time without a day is dropped.
+        let edited = store.update(first.id, "Courses".into(), None, NaiveTime::from_hms_opt(9, 0, 0)).unwrap();
+        assert_eq!((edited.due_date, edited.due_time), (None, None));
+        assert!(store.update(999, "x".into(), None, None).is_none());
     }
 }

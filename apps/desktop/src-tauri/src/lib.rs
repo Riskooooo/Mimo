@@ -1,6 +1,8 @@
 mod activity;
 mod apps;
+mod capture;
 mod commands;
+mod custom;
 mod diagnostics;
 mod notifications;
 mod panel;
@@ -37,7 +39,7 @@ const TOP_OFFSET: f64 = 14.0;
 
 /// Extra window height (logical px) given to the settings drawer when open —
 /// matched by `.settings-panel.open`'s height in the frontend.
-pub(crate) const SETTINGS_PANEL_HEIGHT: f64 = 326.0;
+pub(crate) const SETTINGS_PANEL_HEIGHT: f64 = 357.0;
 
 /// Gap (physical px) between the tray-menu popup and the tray icon it opened from.
 const TRAY_MENU_GAP: i32 = 8;
@@ -69,6 +71,14 @@ pub fn run() {
             commands::stop_speaking,
             commands::complete_task,
             commands::add_task_text,
+            commands::update_task,
+            custom::list_custom_commands,
+            custom::save_custom_command,
+            custom::delete_custom_command,
+            custom::list_installed_apps,
+            custom::open_commands_window,
+            custom::close_commands_window,
+            commands::add_reminder_text,
             commands::translate_clipboard,
             commands::cancel_translation,
             commands::copy_text,
@@ -111,9 +121,11 @@ pub fn run() {
                 voice.set_enabled(app.handle(), true);
             }
             app.manage(voice);
+            app.manage(custom::CustomCommands::load(app.handle()));
             app.manage(Sounds::new());
             app.manage(speech::Speech::default());
             app.manage(panel::Panel::default());
+            app.manage(capture::Recorder::default());
             let reminders = reminders::Reminders::load(app.handle());
             reminders.start(app.handle().clone());
             app.manage(reminders);
@@ -125,6 +137,15 @@ pub fn run() {
             app.manage(suggestions::Suggestions::load(app.handle()));
             suggestions::Suggestions::start(app.handle().clone());
             app.manage(Mutex::new(settings));
+
+            // The windows are declared with `"create": false` and only built
+            // now that every state is managed: in release builds the pages
+            // load fast enough to call commands (`engine_status`,
+            // `get_settings`) before `setup` would otherwise have run, and the
+            // pill then stayed on "Loading…" forever.
+            for config in app.config().app.windows.clone() {
+                tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?.build()?;
+            }
 
             if let Some(window) = app.get_webview_window("main") {
                 place_island(&window);
@@ -152,10 +173,20 @@ pub fn run() {
 /// when packaged, or straight from the source tree in dev builds (where
 /// `scripts/fetch-voice-models.ps1` downloads them).
 fn voice_assets_dir(app: &AppHandle) -> std::path::PathBuf {
-    let bundled = app.path().resource_dir().ok().map(|dir| dir.join("vosk"));
+    // `resource_dir()` is a verbatim `\\?\C:\…` path in packaged builds,
+    // which libvosk can't open ("does not contain model files").
+    let bundled = app.path().resource_dir().ok().map(|dir| strip_verbatim(&dir).join("vosk"));
     match bundled {
         Some(dir) if dir.exists() || !cfg!(debug_assertions) => dir,
         _ => std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources").join("vosk"),
+    }
+}
+
+/// `\\?\C:\dir` → `C:\dir`. UNC (`\\?\UNC\…`) paths are left alone.
+fn strip_verbatim(path: &std::path::Path) -> std::path::PathBuf {
+    match path.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(rest) if !rest.starts_with("UNC\\") => std::path::PathBuf::from(rest),
+        _ => path.to_path_buf(),
     }
 }
 
