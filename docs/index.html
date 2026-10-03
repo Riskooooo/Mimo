@@ -4,7 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Mimo</title>
-  <meta name="description" content="Mimo is a desktop companion for Windows, inspired by the iOS Dynamic Island." />
+  <link rel="icon" type="image/png" href="favicon.png" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+  <meta name="description" content="Mimo is a voice and keyboard desktop companion for Windows, living in a floating pill inspired by the iOS Dynamic Island." />
   <style>
     :root {
       color-scheme: dark;
@@ -33,6 +35,15 @@
     main {
       width: 100%;
       max-width: 620px;
+    }
+
+    .logo {
+      display: block;
+      width: 96px;
+      height: 96px;
+      border-radius: 22px;
+      margin-bottom: 1.5rem;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
     }
 
     .pill {
@@ -139,6 +150,8 @@
 </head>
 <body>
   <main>
+    <img class="logo" src="logo.png" alt="Mimo" width="96" height="96" />
+
     <div class="pill"><span class="dot"></span> Mimo</div>
 
     <div class="status">In development</div>
@@ -150,31 +163,62 @@
     </p>
 
     <p>
-      Mimo is designed to analyze what's happening on the computer and
-      surface suggestions or automate small tasks for the user. The project
-      is being built from the ground up with a focus on performance,
-      security, and long-term maintainability — it should never be the kind
-      of background companion that slows a machine down.
+      Press a shortcut or just say “Hey Mimo”, then ask: open an app or a
+      website, check the weather, look over your PC's health, read your
+      notifications, set a reminder, keep a to-do list or translate a
+      sentence — in English or French. Mimo also learns how you use your PC
+      and makes suggestions on its own, without ever getting in the way. It is
+      built with a focus on performance, security and long-term
+      maintainability — it should never be the kind of background companion
+      that slows a machine down.
     </p>
 
     <div class="grid">
       <div class="card">
-        <h2>Status</h2>
-        <p>Early development. The desktop shell and interaction model come first; system analysis and automation features are not built yet.</p>
+        <h2>Voice &amp; shortcut</h2>
+        <p>Summon Mimo with a keyboard shortcut or “Hey Mimo”. Speech recognition runs fully offline.</p>
       </div>
       <div class="card">
-        <h2>Platform</h2>
-        <p>Windows only, for now.</p>
+        <h2>Apps &amp; websites</h2>
+        <p>Opens your installed apps, common websites and Windows tools by name.</p>
       </div>
       <div class="card">
-        <h2>Stack</h2>
-        <p>Tauri 2 (Rust) for the native shell, Svelte and TypeScript for the interface.</p>
+        <h2>Quick answers</h2>
+        <p>Time, date and the weather, for your area or any city.</p>
       </div>
       <div class="card">
-        <h2>Privacy</h2>
-        <p>Local-first by design. No telemetry.</p>
+        <h2>PC check-up</h2>
+        <p>CPU, memory, disk, temperature, battery and GPU at a glance, with plain-language advice.</p>
+      </div>
+      <div class="card">
+        <h2>Notifications</h2>
+        <p>Lists your recent Windows notifications, and reads them aloud on request.</p>
+      </div>
+      <div class="card">
+        <h2>Reminders &amp; tasks</h2>
+        <p>Reminders, alarms and a simple to-do list, set by voice or text.</p>
+      </div>
+      <div class="card">
+        <h2>Suggestions</h2>
+        <p>Learns your routines and offers to open your usual apps, close one that slows the PC down, or take a break.</p>
+      </div>
+      <div class="card">
+        <h2>Translation</h2>
+        <p>Translates a sentence, or whatever you copy next, between English and French.</p>
+      </div>
+      <div class="card">
+        <h2>Platform &amp; stack</h2>
+        <p>Windows only, for now. Tauri 2 (Rust) for the native shell, Svelte and TypeScript for the interface.</p>
       </div>
     </div>
+
+    <p>
+      <strong>Privacy.</strong> No telemetry, and your settings, reminders and
+      tasks and activity history stay on your PC. Mimo only goes online to open the links you ask
+      for, to fetch the weather (Open-Meteo, plus ipwho.is to estimate your
+      location when no city is given), and to translate text (sent to Google
+      Translate).
+    </p>
 
     <footer>
       <a href="https://github.com/Riskooooo/Mimo">Source on GitHub</a>

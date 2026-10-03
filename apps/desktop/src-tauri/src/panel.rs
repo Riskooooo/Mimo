@@ -5,6 +5,7 @@
 
 use std::sync::Mutex;
 
+use mimo_core::activity::{AppUsage, Period};
 use mimo_core::notifications::NotificationItem;
 use mimo_core::reminders::Reminder;
 use mimo_core::system::{Advice, SystemSnapshot};
@@ -34,6 +35,18 @@ pub enum PanelContent {
     Tasks {
         lang: &'static str,
         items: Vec<Task>,
+        summary: String,
+    },
+    Activity {
+        lang: &'static str,
+        period: Period,
+        total_secs: i64,
+        /// Most used first.
+        apps: Vec<AppUsage>,
+        /// Active minutes per hour of today, or per day of the last 7
+        /// days, starting at `chart_start` (unix, local midnight).
+        chart: Vec<u32>,
+        chart_start: i64,
         summary: String,
     },
 }

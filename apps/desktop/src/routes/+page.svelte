@@ -13,6 +13,8 @@
     voice_wake_enabled: boolean;
     language: Language;
     sounds_enabled: boolean;
+    activity_enabled: boolean;
+    suggestions_enabled: boolean;
   };
   type Language = "en" | "fr";
 
@@ -37,6 +39,14 @@
       voiceWake: "Listen for “Hey Mimo”",
       language: "Language",
       sounds: "Sounds",
+      activity: "Analyze my activity",
+      suggestions: "Suggestions",
+      suggestion: "Suggestion",
+      open: "Open",
+      closeApp: "Close it",
+      ok: "OK",
+      later: "Later",
+      never: "Don't suggest again",
       eraseMemory: "Erase memory",
     },
     fr: {
@@ -57,6 +67,14 @@
       voiceWake: "Écouter « Hey Mimo »",
       language: "Langue",
       sounds: "Sons",
+      activity: "Analyser mon activité",
+      suggestions: "Suggestions",
+      suggestion: "Suggestion",
+      open: "Ouvrir",
+      closeApp: "Le fermer",
+      ok: "OK",
+      later: "Plus tard",
+      never: "Ne plus proposer",
       eraseMemory: "Effacer la mémoire",
     },
   };
@@ -74,6 +92,16 @@
   type SummonSource = "shortcut" | "voice" | "reminder";
   type SoundName = "wake" | "success" | "error" | "reminder" | "alarm";
   type Ringing = { kind: "reminder" | "alarm"; message: string | null; time: string };
+  // Something Mimo offers on its own (see src-tauri/src/suggestions.rs).
+  type Suggestion = {
+    keys: string[];
+    message: string;
+    action:
+      | { kind: "launch"; apps: { name: string; app_id: string }[] }
+      | { kind: "close"; label: string; process: string }
+      | null;
+  };
+  type SuggestionChoice = "accept" | "later" | "never" | "dismiss";
 
   // The pill grows in two hops, like the real Dynamic Island: a small
   // "compact" size while loading, then a wider "full" size once ready.
@@ -125,6 +153,10 @@
   const TRANSLATION_DRAWER_HEIGHT = 170;
   const TRANSLATION_LINGER_MS = 20000;
 
+  // The suggestion card (same idea), left up this long unless hovered.
+  const SUGGESTION_DRAWER_HEIGHT = 118;
+  const SUGGESTION_LINGER_MS = 25000;
+
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
   type Stage = "collapsed" | "compact" | "full";
@@ -133,7 +165,17 @@
   // for a spoken request, running a request, or showing the reply.
   // "copywait": waiting for the user to copy text to translate;
   // "translation": the translation card is open.
-  type Mode = "idle" | "input" | "listening" | "thinking" | "reply" | "ringing" | "copywait" | "translation";
+  // "suggestion": Mimo brought itself up to offer something.
+  type Mode =
+    | "idle"
+    | "input"
+    | "listening"
+    | "thinking"
+    | "reply"
+    | "ringing"
+    | "copywait"
+    | "translation"
+    | "suggestion";
 
   let stage = $state<Stage>("collapsed");
   let phase = $state<Phase>("loading");
@@ -144,9 +186,11 @@
   let settings = $state<AppSettings>({
     launch_at_startup: false,
     summon_shortcut: "F9",
-    voice_wake_enabled: false,
+    voice_wake_enabled: true,
     language: "en",
     sounds_enabled: true,
+    activity_enabled: true,
+    suggestions_enabled: true,
   });
 
   const t = $derived(TEXT[settings.language] ?? TEXT.en);
@@ -165,6 +209,9 @@
   let drawerOpen = $state(false);
   let copied = $state(false);
   let translationTimer: ReturnType<typeof setTimeout> | undefined;
+  let suggestion = $state<Suggestion | null>(null);
+  let suggestionOpen = $state(false);
+  let suggestionTimer: ReturnType<typeof setTimeout> | undefined;
 
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let pointerInside = false;
@@ -197,14 +244,16 @@
   function handlePointerEnter() {
     pointerInside = true;
     if (mode === "idle") cancelIdleHide();
-    // Reading the translation: keep it up.
+    // Reading the translation or suggestion: keep it up.
     if (mode === "translation") clearTimeout(translationTimer);
+    if (mode === "suggestion") clearTimeout(suggestionTimer);
   }
 
   function handlePointerLeave() {
     pointerInside = false;
     if (mode === "idle") armIdleHide();
     if (mode === "translation") armTranslationHide();
+    if (mode === "suggestion") armSuggestionHide();
   }
 
   async function playInitialReveal() {
@@ -277,9 +326,11 @@
     }
     if (minimizing) await minimizing;
     if (mode === "copywait") void invoke("cancel_translation");
+    if (mode === "suggestion") void invoke("answer_suggestion", { choice: "dismiss" });
     await closeSettings();
     await closeDrawer();
     translation = null;
+    suggestion = null;
     if (stage !== "full") playQuickReveal();
     enterMode(source);
   }
@@ -398,10 +449,60 @@
 
   async function closeDrawer() {
     clearTimeout(translationTimer);
-    if (!drawerOpen) return;
+    clearTimeout(suggestionTimer);
+    if (!drawerOpen && !suggestionOpen) return;
     drawerOpen = false;
+    suggestionOpen = false;
     await sleep(SETTINGS_TRANSITION_MS);
     await invoke("set_pill_drawer", { height: 0 });
+  }
+
+  // The shell has shown the pill (without focus) with something to offer.
+  async function showSuggestion(next: Suggestion) {
+    if (minimizing) await minimizing;
+    await closeSettings();
+    cancelIdleHide();
+    suggestion = next;
+    showControls = false;
+    mode = "suggestion";
+    if (stage !== "full") playQuickReveal();
+    sound("reminder");
+    await invoke("set_pill_drawer", { height: SUGGESTION_DRAWER_HEIGHT });
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        suggestionOpen = true;
+      });
+    });
+    armSuggestionHide();
+  }
+
+  function armSuggestionHide() {
+    clearTimeout(suggestionTimer);
+    if (mode !== "suggestion" || pointerInside) return;
+    suggestionTimer = setTimeout(() => void answerSuggestion("dismiss"), SUGGESTION_LINGER_MS);
+  }
+
+  async function answerSuggestion(choice: SuggestionChoice) {
+    if (mode !== "suggestion") return;
+    clearTimeout(suggestionTimer);
+    const answer = await invoke<string | null>("answer_suggestion", { choice });
+    await closeDrawer();
+    suggestion = null;
+    if (answer) {
+      reply = answer;
+      replyOk = true;
+      mode = "reply";
+      sound("success");
+      await sleep(REPLY_LINGER_MS);
+      if (mode !== "reply") return;
+    }
+    await handleMinimize();
+  }
+
+  function acceptLabel(next: Suggestion) {
+    if (next.action?.kind === "launch") return t.open;
+    if (next.action?.kind === "close") return t.closeApp;
+    return t.ok;
   }
 
   async function dismissTranslation() {
@@ -546,6 +647,18 @@
     sound("wake");
   }
 
+  async function toggleSuggestions() {
+    settings = await invoke<AppSettings>("set_suggestions_enabled", {
+      enabled: !settings.suggestions_enabled,
+    });
+  }
+
+  async function toggleActivity() {
+    settings = await invoke<AppSettings>("set_activity_enabled", {
+      enabled: !settings.activity_enabled,
+    });
+  }
+
   async function setLanguage(language: Language) {
     if (language === settings.language) return;
     voiceError = "";
@@ -619,6 +732,11 @@
 
     const unlistenReveal = listen("mimo://reveal", () => {
       cancelIdleHide();
+      if (mode === "suggestion") {
+        void invoke("answer_suggestion", { choice: "dismiss" });
+        void closeDrawer();
+        suggestion = null;
+      }
       stopRinging();
       ringing = null;
       mode = "idle";
@@ -637,6 +755,10 @@
 
     const unlistenRinging = listen<Ringing>("mimo://ringing", (event) => {
       startRinging(event.payload);
+    });
+
+    const unlistenSuggestion = listen<Suggestion>("mimo://suggestion", (event) => {
+      void showSuggestion(event.payload);
     });
 
     const unlistenVoiceError = listen<string>("mimo://voice-error", (event) => {
@@ -663,6 +785,7 @@
       void unlistenVoiceError.then((fn) => fn());
       void unlistenFocus.then((fn) => fn());
       void unlistenRinging.then((fn) => fn());
+      void unlistenSuggestion.then((fn) => fn());
       stopRinging();
       cancelIdleHide();
     };
@@ -706,6 +829,7 @@
     request = "";
     reply = "";
     translation = null;
+    suggestion = null;
     showControls = true;
   }
 
@@ -723,6 +847,7 @@
     class:full={stage === "full"}
     class:settings-open={settingsOpen}
     class:drawer-open={drawerOpen}
+    class:suggestion-open={suggestionOpen}
     data-tauri-drag-region
     role="presentation"
     onpointerenter={handlePointerEnter}
@@ -782,6 +907,7 @@
               class:thinking={mode === "thinking"}
               class:failed={mode === "reply" && !replyOk}
               class:alarm={mode === "ringing"}
+              class:suggesting={mode === "suggestion"}
             ></span>
             {#if mode === "input"}
               <input
@@ -798,6 +924,8 @@
               <span class="label prompt-text">{t.listening}</span>
             {:else if mode === "translation"}
               <span class="label prompt-text">{t.translation}</span>
+            {:else if mode === "suggestion"}
+              <span class="label prompt-text">{t.suggestion}</span>
             {:else if mode === "ringing" && ringing}
               <span class="label prompt-text ring-text">
                 <span class="ring-time">{ringing.time}</span>
@@ -821,6 +949,19 @@
           </div>
           <p class="translation-text">{translation.translated}</p>
           <p class="translation-original">{translation.original}</p>
+        {/if}
+      </div>
+
+      <div class="suggestion-panel" class:open={suggestionOpen}>
+        {#if suggestion}
+          <p class="suggestion-text">{suggestion.message}</p>
+          <div class="suggestion-actions">
+            <button class="suggestion-button primary" type="button" onclick={() => answerSuggestion("accept")}>
+              {acceptLabel(suggestion)}
+            </button>
+            <button class="suggestion-button" type="button" onclick={() => answerSuggestion("later")}>{t.later}</button>
+            <button class="suggestion-never" type="button" onclick={() => answerSuggestion("never")}>{t.never}</button>
+          </div>
         {/if}
       </div>
 
@@ -892,6 +1033,36 @@
             aria-checked={settings.sounds_enabled}
             aria-label={t.sounds}
             onclick={toggleSounds}
+          >
+            <span class="switch-knob"></span>
+          </button>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">{t.activity}</span>
+          <button
+            class="switch"
+            class:on={settings.activity_enabled}
+            type="button"
+            role="switch"
+            aria-checked={settings.activity_enabled}
+            aria-label={t.activity}
+            onclick={toggleActivity}
+          >
+            <span class="switch-knob"></span>
+          </button>
+        </div>
+        <!-- Suggestions are built on the activity analysis: greyed out without it. -->
+        <div class="settings-row" class:dimmed={!settings.activity_enabled}>
+          <span class="settings-label">{t.suggestions}</span>
+          <button
+            class="switch"
+            class:on={settings.suggestions_enabled && settings.activity_enabled}
+            type="button"
+            role="switch"
+            aria-checked={settings.suggestions_enabled && settings.activity_enabled}
+            aria-label={t.suggestions}
+            disabled={!settings.activity_enabled}
+            onclick={toggleSuggestions}
           >
             <span class="switch-knob"></span>
           </button>
@@ -993,9 +1164,9 @@
   /* Grows downward to reveal .settings-panel. The window is resized to fit
      this *before* the class is added (see openSettings in the script), so
      the extra room already exists and this is a pure CSS-driven grow —
-     matches SETTINGS_PANEL_HEIGHT (264) + the base 44px in src-tauri/src/lib.rs. */
+     matches SETTINGS_PANEL_HEIGHT (326) + the base 44px in src-tauri/src/lib.rs. */
   .pill.full.settings-open {
-    height: 308px;
+    height: 370px;
     border-radius: 28px;
   }
 
@@ -1259,6 +1430,112 @@
       linear-gradient(160deg, #2a2a31, #111115);
   }
 
+  /* Grows by SUGGESTION_DRAWER_HEIGHT, like the translation card. */
+  .pill.full.suggestion-open {
+    height: calc(44px + 118px);
+    border-radius: 26px;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0) 38%),
+      linear-gradient(160deg, #2a2a31, #111115);
+  }
+
+  .suggestion-panel {
+    flex: 0 0 0;
+    width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+    opacity: 0;
+    padding: 0 18px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 12px;
+    pointer-events: none;
+    transition:
+      flex-basis 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+      opacity 0.3s ease;
+    font-family:
+      -apple-system,
+      "SF Pro Display",
+      "Segoe UI",
+      Inter,
+      sans-serif;
+  }
+
+  .suggestion-panel.open {
+    flex-basis: 118px;
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .suggestion-text {
+    margin: 0;
+    font-size: 0.86rem;
+    line-height: 1.35;
+    color: #f5f5f7;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .suggestion-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .suggestion-button {
+    border: none;
+    border-radius: 999px;
+    padding: 5px 13px;
+    background: rgba(255, 255, 255, 0.12);
+    color: #f5f5f7;
+    font: inherit;
+    font-size: 0.76rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.1s ease, filter 0.15s ease, background 0.15s ease;
+  }
+
+  .suggestion-button:hover {
+    background: rgba(255, 255, 255, 0.18);
+  }
+
+  .suggestion-button.primary {
+    background: #0a84ff;
+    color: #fff;
+  }
+
+  .suggestion-button.primary:hover {
+    filter: brightness(1.1);
+  }
+
+  .suggestion-button:active {
+    transform: scale(0.95);
+  }
+
+  .suggestion-never {
+    margin-left: auto;
+    border: none;
+    padding: 0;
+    background: none;
+    color: rgba(245, 245, 247, 0.45);
+    font: inherit;
+    font-size: 0.72rem;
+    cursor: pointer;
+  }
+
+  .suggestion-never:hover {
+    color: rgba(245, 245, 247, 0.75);
+  }
+
+  .dot.running.suggesting {
+    background: #0a84ff;
+    box-shadow: 0 0 10px rgba(10, 132, 255, 0.85);
+  }
+
   .translation-panel {
     flex: 0 0 0;
     width: 100%;
@@ -1367,7 +1644,7 @@
   }
 
   .settings-panel.open {
-    flex-basis: 264px;
+    flex-basis: 326px;
     opacity: 1;
     pointer-events: auto;
   }
@@ -1377,6 +1654,14 @@
     align-items: center;
     justify-content: space-between;
     gap: 10px;
+  }
+
+  .settings-row.dimmed {
+    opacity: 0.4;
+  }
+
+  .switch:disabled {
+    cursor: default;
   }
 
   .settings-label {

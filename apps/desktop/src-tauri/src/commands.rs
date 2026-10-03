@@ -17,11 +17,13 @@ use mimo_core::translate::{copy_hint, TranslateRequest, Translation};
 use mimo_core::Lang;
 use mimo_core::{Engine, Intent};
 
+use crate::activity::{midnight, Activity};
 use crate::panel::{self, lang_code, Panel, PanelContent};
 use crate::reminders::Reminders;
 use crate::tasks::Tasks;
 use crate::sounds::{Sound, Sounds};
 use crate::speech::Speech;
+use crate::suggestions::Suggestions;
 use crate::voice::VoiceWake;
 use crate::{PILL_HEIGHT, SETTINGS_PANEL_HEIGHT, WINDOW_MARGIN_Y};
 
@@ -177,6 +179,45 @@ pub fn set_voice_wake_enabled(
     guard.clone()
 }
 
+/// Turns activity analysis on or off (sampling stops at once when off).
+#[tauri::command]
+pub fn set_activity_enabled(
+    app: AppHandle,
+    settings: tauri::State<'_, Mutex<Settings>>,
+    activity: tauri::State<'_, Activity>,
+    enabled: bool,
+) -> Settings {
+    activity.set_enabled(enabled);
+
+    let mut guard = settings.lock().expect("settings mutex poisoned");
+    guard.activity_enabled = enabled;
+    persist(&app, &guard);
+    guard.clone()
+}
+
+/// Turns Mimo's own suggestions on or off (activity analysis keeps running).
+#[tauri::command]
+pub fn set_suggestions_enabled(
+    app: AppHandle,
+    settings: tauri::State<'_, Mutex<Settings>>,
+    enabled: bool,
+) -> Settings {
+    let mut guard = settings.lock().expect("settings mutex poisoned");
+    guard.suggestions_enabled = enabled;
+    persist(&app, &guard);
+    guard.clone()
+}
+
+/// The user's answer to the suggestion on screen (`"accept"`, `"later"`,
+/// `"never"`, `"dismiss"`); returns what the pill should say, if anything.
+/// The pill can take focus again afterwards.
+#[tauri::command]
+pub fn answer_suggestion(app: AppHandle, window: WebviewWindow, choice: String) -> Option<String> {
+    let reply = app.state::<Suggestions>().answer(&app, &choice);
+    let _ = window.set_focusable(true);
+    reply
+}
+
 /// Best-effort write: a failed save only loses the preference on restart,
 /// which isn't worth failing the user's toggle over.
 fn persist(app: &AppHandle, settings: &Settings) {
@@ -201,6 +242,8 @@ pub fn erase_memory(
     apply_language(&app, &voice, &Settings::default().language);
     app.state::<Reminders>().cancel(None);
     app.state::<Tasks>().clear();
+    app.state::<Activity>().forget();
+    app.state::<Suggestions>().forget();
 
     if let Ok(dir) = app.path().app_data_dir() {
         let _ = std::fs::remove_dir_all(&dir);
@@ -327,6 +370,7 @@ fn handle_request(app: &AppHandle, request: &str, spoken: bool) -> AskResponseDt
             }
         }
         Intent::Task { command, lang } => handle_task(app, command, lang),
+        Intent::Activity { query, lang } => handle_activity(app, query, lang),
         Intent::Translate { request, lang } => match request {
             TranslateRequest::Text { text, target } => match crate::translate::translate(&text, lang, target) {
                 Ok(translation) => AskResponseDto {
@@ -345,6 +389,45 @@ fn handle_request(app: &AppHandle, request: &str, spoken: bool) -> AskResponseDt
             }
         },
         other => mimo_commands::execute(app, &other),
+    }
+}
+
+/// "Résumé de ma journée" opens the activity panel; "combien de temps sur
+/// Discord" is answered in the pill.
+fn handle_activity(app: &AppHandle, query: mimo_core::activity::ActivityQuery, lang: Lang) -> AskResponseDto {
+    use mimo_core::activity::{disabled_message, find_app, format_app_time};
+    if !app.state::<Activity>().is_enabled() {
+        return AskResponseDto::failed_answer(disabled_message(lang).to_string());
+    }
+    let content = activity_content(app, query.period, lang);
+    let PanelContent::Activity { apps, summary, .. } = &content else { unreachable!() };
+    match query.app {
+        Some(said) => AskResponseDto::answer(format_app_time(&said, find_app(apps, &said), query.period, lang)),
+        None => {
+            let reply = summary.clone();
+            panel::show(app, content);
+            AskResponseDto::answer(reply)
+        }
+    }
+}
+
+fn activity_content(app: &AppHandle, period: mimo_core::activity::Period, lang: Lang) -> PanelContent {
+    use mimo_core::activity::{format_summary, minutes_per_bucket, total_secs, usage_by_app, Period};
+    let now = chrono::Local::now().timestamp();
+    let (from, bucket, count) = match period {
+        Period::Today => (midnight(0), 3600, 24),
+        Period::Week => (midnight(6), 86_400, 7),
+    };
+    let sessions = app.state::<Activity>().sessions(from, now);
+    let apps = usage_by_app(&sessions, from, now);
+    PanelContent::Activity {
+        lang: lang_code(lang),
+        period,
+        total_secs: total_secs(&sessions, from, now),
+        summary: format_summary(&apps, period, lang),
+        chart: minutes_per_bucket(&sessions, from, bucket, count),
+        chart_start: from,
+        apps,
     }
 }
 

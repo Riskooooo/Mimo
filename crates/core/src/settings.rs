@@ -32,6 +32,11 @@ pub struct Settings {
     pub language: String,
     /// Short UI sounds (wake chime, success/error) on or off.
     pub sounds_enabled: bool,
+    /// Learn which apps are used when (stored locally, can be turned off
+    /// in settings).
+    pub activity_enabled: bool,
+    /// Let Mimo suggest things on its own (needs `activity_enabled`).
+    pub suggestions_enabled: bool,
 }
 
 impl Default for Settings {
@@ -39,9 +44,11 @@ impl Default for Settings {
         Self {
             launch_at_startup: false,
             summon_shortcut: DEFAULT_SUMMON_SHORTCUT.to_string(),
-            voice_wake_enabled: false,
+            voice_wake_enabled: true,
             language: LANGUAGES[0].to_string(),
             sounds_enabled: true,
+            activity_enabled: true,
+            suggestions_enabled: true,
         }
     }
 }
@@ -84,7 +91,9 @@ mod tests {
         let settings: Settings = serde_json::from_str(r#"{ "launch_at_startup": true }"#).unwrap();
         assert!(settings.launch_at_startup);
         assert_eq!(settings.summon_shortcut, DEFAULT_SUMMON_SHORTCUT);
-        assert!(!settings.voice_wake_enabled);
+        assert!(settings.voice_wake_enabled);
+        assert!(settings.activity_enabled);
+        assert!(settings.suggestions_enabled);
         assert_eq!(settings.language, "en");
         assert!(settings.sounds_enabled);
     }

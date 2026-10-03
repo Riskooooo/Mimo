@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::ffi::{c_char, c_int, c_short, c_void, CStr, CString};
 use std::fs::File;
 use std::io::{BufReader, Read};
+use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -25,6 +26,7 @@ type RecognizerNewGrm = unsafe extern "C" fn(*mut c_void, f32, *const c_char) ->
 type AcceptWaveformS = unsafe extern "C" fn(*mut c_void, *const c_short, c_int) -> c_int;
 type ResultFn = unsafe extern "C" fn(*mut c_void) -> *const c_char;
 type SetLogLevel = unsafe extern "C" fn(c_int);
+type SetWords = unsafe extern "C" fn(*mut c_void, c_int);
 
 /// The loaded library. Function pointers stay valid as long as `_lib` lives,
 /// and every model/recognizer keeps an `Arc` to it.
@@ -35,6 +37,7 @@ pub struct Vosk {
     recognizer_new_grm: RecognizerNewGrm,
     recognizer_free: Free,
     recognizer_reset: Free,
+    recognizer_set_words: SetWords,
     accept_waveform_s: AcceptWaveformS,
     result: ResultFn,
     partial_result: ResultFn,
@@ -70,6 +73,7 @@ impl Vosk {
             recognizer_new_grm: symbol(&lib, "vosk_recognizer_new_grm")?,
             recognizer_free: symbol(&lib, "vosk_recognizer_free")?,
             recognizer_reset: symbol(&lib, "vosk_recognizer_reset")?,
+            recognizer_set_words: symbol(&lib, "vosk_recognizer_set_words")?,
             accept_waveform_s: symbol(&lib, "vosk_recognizer_accept_waveform_s")?,
             result: symbol(&lib, "vosk_recognizer_result")?,
             partial_result: symbol(&lib, "vosk_recognizer_partial_result")?,
@@ -98,14 +102,35 @@ impl Model {
         if !dir.join("am").exists() {
             return Err(MISSING_ASSETS.to_string());
         }
-        let path = CString::new(dir.to_string_lossy().as_bytes())
-            .map_err(|_| "Invalid voice model path.".to_string())?;
+        let path = CString::new(narrow_path(dir)).map_err(|_| "Invalid voice model path.".to_string())?;
         let ptr = unsafe { (vosk.model_new)(path.as_ptr()) };
         if ptr.is_null() {
             return Err(format!("Couldn't load the voice model in {}.", dir.display()));
         }
         Ok(Self { vosk: vosk.clone(), ptr })
     }
+}
+
+/// libvosk opens files with narrow (ANSI code page) paths, so a folder
+/// with accents — the install folder under C:\Users\Hélène — wouldn't
+/// load. Such paths are passed in their 8.3 short form, which is ASCII.
+pub(crate) fn narrow_path(dir: &Path) -> String {
+    let full = dir.to_string_lossy().to_string();
+    if full.is_ascii() {
+        return full;
+    }
+    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut buffer = vec![0u16; 1024];
+    let len = unsafe { GetShortPathNameW(wide.as_ptr(), buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+    if len == 0 || len > buffer.len() {
+        return full;
+    }
+    String::from_utf16_lossy(&buffer[..len])
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetShortPathNameW(long_path: *const u16, short_path: *mut u16, len: u32) -> u32;
 }
 
 impl Drop for Model {
@@ -179,12 +204,24 @@ pub struct Recognizer {
     ptr: *mut c_void,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct Output {
     #[serde(default)]
     text: String,
     #[serde(default)]
     partial: String,
+    #[serde(default)]
+    result: Vec<Word>,
+}
+
+/// One recognized word with its timing (seconds since the recognizer was
+/// last reset) and confidence (0–1), from [`Recognizer::finish_words`].
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Word {
+    pub word: String,
+    pub start: f32,
+    pub end: f32,
+    pub conf: f32,
 }
 
 impl Recognizer {
@@ -236,6 +273,18 @@ impl Recognizer {
         self.read(self.vosk.final_result).text
     }
 
+    /// Ends the utterance in progress now and returns its words, with
+    /// timings and confidences. Needs [`Recognizer::with_word_details`].
+    pub fn finish_words(&mut self) -> Vec<Word> {
+        self.read(self.vosk.final_result).result
+    }
+
+    /// Makes results carry per-word timings and confidences.
+    pub fn with_word_details(self) -> Self {
+        unsafe { (self.vosk.recognizer_set_words)(self.ptr, 1) };
+        self
+    }
+
     pub fn reset(&mut self) {
         unsafe { (self.vosk.recognizer_reset)(self.ptr) };
     }
@@ -245,10 +294,10 @@ impl Recognizer {
         // until the next call, so it's parsed immediately.
         let raw = unsafe { getter(self.ptr) };
         if raw.is_null() {
-            return Output { text: String::new(), partial: String::new() };
+            return Output::default();
         }
         let json = unsafe { CStr::from_ptr(raw) }.to_string_lossy();
-        serde_json::from_str(&json).unwrap_or(Output { text: String::new(), partial: String::new() })
+        serde_json::from_str(&json).unwrap_or_default()
     }
 }
 

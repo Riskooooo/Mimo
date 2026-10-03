@@ -9,6 +9,7 @@
 
 use std::collections::HashSet;
 
+use crate::activity::{self, ActivityQuery};
 use crate::apps::{AppCatalog, InstalledApp};
 use crate::info::{self, Lang, Question};
 use crate::reminders::{self, ReminderCommand};
@@ -34,6 +35,8 @@ pub enum Intent {
     Reminder { command: ReminderCommand, lang: Lang },
     Task { command: TaskCommand, lang: Lang },
     Translate { request: TranslateRequest, lang: Lang },
+    /// A question about the user's activity (screen time, a day's summary).
+    Activity { query: ActivityQuery, lang: Lang },
     Unknown,
 }
 
@@ -59,7 +62,8 @@ impl Intent {
             | Intent::ReadNotifications { .. }
             | Intent::Reminder { .. }
             | Intent::Task { .. }
-            | Intent::Translate { .. } => "…".to_string(),
+            | Intent::Translate { .. }
+            | Intent::Activity { .. } => "…".to_string(),
             Intent::Unknown => match lang {
                 Lang::Fr => "Désolé, je n'ai pas compris. Essaie « ouvre youtube ».".to_string(),
                 Lang::En => "Sorry, I didn't get that. Try “open youtube”.".to_string(),
@@ -276,6 +280,7 @@ pub fn voice_phrases(language: &str, apps: &AppCatalog) -> Vec<String> {
     phrases.extend(reminders::voice_phrases(language));
     phrases.extend(tasks::voice_phrases(language).iter().map(|q| q.to_string()));
     phrases.extend(translate::voice_phrases(language).iter().map(|q| q.to_string()));
+    phrases.extend(activity::voice_phrases(language).iter().map(|q| q.to_string()));
 
     // Installed apps, by name, with the verbs people use for programs.
     let mut seen: HashSet<String> = phrases.iter().cloned().collect();
@@ -363,6 +368,9 @@ pub fn parse_in(request: &str, apps: &AppCatalog, lang: Option<Lang>) -> Intent 
     // Assistant features with distinctive words come first: "lance un
     // diagnostic", "mets un réveil" aren't about opening something.
     let lang = lang_or_detected;
+    if let Some(query) = activity::detect(&tokens) {
+        return Intent::Activity { query, lang };
+    }
     if let Some(command) = reminders::detect(&tokens) {
         return Intent::Reminder { command, lang };
     }

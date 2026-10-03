@@ -1,3 +1,4 @@
+mod activity;
 mod apps;
 mod commands;
 mod diagnostics;
@@ -6,6 +7,7 @@ mod panel;
 mod reminders;
 mod sounds;
 mod speech;
+mod suggestions;
 mod tasks;
 mod translate;
 mod voice;
@@ -35,7 +37,7 @@ const TOP_OFFSET: f64 = 14.0;
 
 /// Extra window height (logical px) given to the settings drawer when open —
 /// matched by `.settings-panel.open`'s height in the frontend.
-pub(crate) const SETTINGS_PANEL_HEIGHT: f64 = 264.0;
+pub(crate) const SETTINGS_PANEL_HEIGHT: f64 = 326.0;
 
 /// Gap (physical px) between the tray-menu popup and the tray icon it opened from.
 const TRAY_MENU_GAP: i32 = 8;
@@ -83,6 +85,9 @@ pub fn run() {
             commands::set_language,
             commands::set_sounds_enabled,
             commands::play_sound,
+            commands::set_activity_enabled,
+            commands::answer_suggestion,
+            commands::set_suggestions_enabled,
         ])
         .setup(|app| {
             app.manage(mimo_commands::init_engine_state());
@@ -114,6 +119,11 @@ pub fn run() {
             app.manage(reminders);
             app.manage(tasks::Tasks::load(app.handle()));
             apps::keep_catalog_current(app.handle().clone());
+            let activity = activity::Activity::new(app.handle(), settings.activity_enabled);
+            activity.start();
+            app.manage(activity);
+            app.manage(suggestions::Suggestions::load(app.handle()));
+            suggestions::Suggestions::start(app.handle().clone());
             app.manage(Mutex::new(settings));
 
             if let Some(window) = app.get_webview_window("main") {
@@ -174,6 +184,8 @@ pub(crate) fn summon(app: &AppHandle, source: &str) {
         if !window.is_visible().unwrap_or(false) {
             place_island(&window);
         }
+        // A suggestion may have left it unfocusable (see `suggestions`).
+        let _ = window.set_focusable(true);
         let _ = window.show();
         let _ = window.set_focus();
         let _ = window.emit("mimo://summon", source);

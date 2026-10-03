@@ -28,7 +28,18 @@
     | { kind: "diagnostic"; lang: Lang; snapshot: Snapshot; advice: Advice[]; summary: string }
     | { kind: "notifications"; lang: Lang; items: NotificationItem[]; error: string | null }
     | { kind: "reminders"; lang: Lang; items: Reminder[] }
-    | { kind: "tasks"; lang: Lang; items: Task[]; summary: string };
+    | { kind: "tasks"; lang: Lang; items: Task[]; summary: string }
+    | {
+        kind: "activity";
+        lang: Lang;
+        period: "today" | "week";
+        total_secs: number;
+        apps: AppUsage[];
+        chart: number[];
+        chart_start: number;
+        summary: string;
+      };
+  type AppUsage = { app: string; label: string; secs: number };
   // due_date "2026-10-03", due_time "14:00:00" (local).
   type Task = { id: number; title: string; due_date: string | null; due_time: string | null };
 
@@ -77,6 +88,12 @@
       allDoneHint: "Dis « ajoute une tâche : … » ou écris-la ci-dessous.",
       at: "à",
       complete: "Terminer",
+      activity: "Activité",
+      byHour: "Par heure",
+      byDay: "Par jour",
+      topApps: "Applications",
+      noActivity: "Rien pour l'instant",
+      noActivityHint: "Mimo apprend au fil de ton utilisation — reviens dans un moment.",
     },
     en: {
       diagnostic: "Check-up",
@@ -122,6 +139,12 @@
       allDoneHint: "Say “add a task: …” or type one below.",
       at: "at",
       complete: "Complete",
+      activity: "Activity",
+      byHour: "By hour",
+      byDay: "By day",
+      topApps: "Apps",
+      noActivity: "Nothing yet",
+      noActivityHint: "Mimo learns as you use your PC — check back in a while.",
     },
   };
 
@@ -158,6 +181,23 @@
   }
 
   const levelColor: Record<Level, string> = { good: GREEN, info: BLUE, warning: ORANGE, critical: RED };
+
+  // "2 h 05" / "45 min", like the pill's answers.
+  function duration(secs: number) {
+    const minutes = Math.floor(secs / 60);
+    const h = Math.floor(minutes / 60);
+    const m = minutes % 60;
+    if (h === 0) return `${m} min`;
+    return `${h} h ${m.toString().padStart(2, "0")}`;
+  }
+
+  // Chart bar labels: hours of today, or the last 7 days' initials.
+  function chartLabel(index: number) {
+    if (content?.kind !== "activity") return "";
+    if (content.period === "today") return index % 6 === 0 ? `${index}h` : "";
+    const day = new Date((content.chart_start + index * 86400) * 1000);
+    return day.toLocaleDateString(content.lang === "en" ? "en-US" : "fr-FR", { weekday: "narrow" });
+  }
 
   function uptime(secs: number) {
     const days = Math.floor(secs / 86400);
@@ -351,7 +391,7 @@
         <header class="header" data-tauri-drag-region>
           <div class="header-text" data-tauri-drag-region>
             <h1 data-tauri-drag-region>{t[content.kind]}</h1>
-            {#if content.kind === "diagnostic" || content.kind === "tasks"}
+            {#if content.kind === "diagnostic" || content.kind === "tasks" || content.kind === "activity"}
               <p class="subtitle" data-tauri-drag-region>{content.summary}</p>
             {/if}
           </div>
@@ -531,6 +571,40 @@
                 {/each}
               </div>
             {/each}
+          {:else if content.kind === "activity"}
+            {#if content.total_secs < 60}
+              <div class="empty">
+                <svg class="empty-glyph" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="12" width="3.4" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.6" /><rect x="10.3" y="7" width="3.4" height="13" rx="1" fill="none" stroke="currentColor" stroke-width="1.6" /><rect x="16.6" y="4" width="3.4" height="16" rx="1" fill="none" stroke="currentColor" stroke-width="1.6" /></svg>
+                <span class="empty-title">{t.noActivity}</span>
+                <span class="empty-hint">{t.noActivityHint}</span>
+              </div>
+            {:else}
+              {@const peak = Math.max(...content.chart, 1)}
+              <h2>{content.period === "today" ? t.byHour : t.byDay}</h2>
+              <div class="card chart" class:week={content.period === "week"}>
+                {#each content.chart as minutes, i (i)}
+                  <div class="chart-column" title={duration(minutes * 60)}>
+                    <div class="chart-track">
+                      <span class="chart-bar" style={`height: ${(minutes / peak) * 100}%; animation-delay: ${i * 18}ms`}></span>
+                    </div>
+                    <span class="chart-label">{chartLabel(i)}</span>
+                  </div>
+                {/each}
+              </div>
+
+              <h2>{t.topApps}</h2>
+              <div class="card list">
+                {#each content.apps.slice(0, 8) as usage (usage.app)}
+                  <div class="row column">
+                    <div class="row-line">
+                      <span class="row-title">{usage.label}</span>
+                      <span class="row-detail">{duration(usage.secs)}</span>
+                    </div>
+                    <div class="bar"><span style={`width: ${(usage.secs / content.apps[0].secs) * 100}%; background: ${BLUE}`}></span></div>
+                  </div>
+                {/each}
+              </div>
+            {/if}
           {/if}
         </div>
         {#if content.kind === "tasks"}
@@ -832,6 +906,54 @@
     from {
       transform: scaleX(0);
     }
+  }
+
+  .chart {
+    display: grid;
+    grid-template-columns: repeat(24, 1fr);
+    gap: 3px;
+    padding: 16px 14px 10px;
+  }
+
+  .chart.week {
+    grid-template-columns: repeat(7, 1fr);
+    gap: 10px;
+  }
+
+  .chart-column {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .chart-track {
+    width: 100%;
+    height: 88px;
+    display: flex;
+    align-items: flex-end;
+  }
+
+  .chart-bar {
+    width: 100%;
+    min-height: 2px;
+    border-radius: 3px;
+    background: #0a84ff;
+    transform-origin: bottom;
+    animation: chart-grow 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  @keyframes chart-grow {
+    from {
+      transform: scaleY(0);
+    }
+  }
+
+  .chart-label {
+    height: 12px;
+    font-size: 0.66rem;
+    color: rgba(245, 245, 247, 0.45);
+    white-space: nowrap;
   }
 
   .footer {
