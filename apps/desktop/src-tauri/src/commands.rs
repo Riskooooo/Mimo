@@ -18,6 +18,7 @@ use mimo_core::Lang;
 use mimo_core::{Engine, Intent};
 
 use crate::activity::{midnight, Activity};
+use crate::ai::{Ai, AiStatus};
 use crate::capture::Recorder;
 use crate::panel::{self, lang_code, Panel, PanelContent};
 use crate::reminders::Reminders;
@@ -49,6 +50,7 @@ pub fn hide_window(app: AppHandle) {
 pub fn quit_app(app: AppHandle) {
     // Finish a recording in progress, or its file would be unreadable.
     let _ = app.state::<Recorder>().stop(&app);
+    app.state::<Ai>().shutdown();
     app.exit(0);
 }
 
@@ -154,8 +156,6 @@ pub fn set_language(
     let mut guard = settings.lock().expect("settings mutex poisoned");
     guard.language = language;
     persist(&app, &guard);
-    // The tray menu has its own labels to switch.
-    let _ = app.emit("mimo://settings-changed", guard.clone());
     Ok(guard.clone())
 }
 
@@ -221,12 +221,78 @@ pub fn answer_suggestion(app: AppHandle, window: WebviewWindow, choice: String) 
     reply
 }
 
+/// Turns the local AI on (downloading it the first time) or off.
+#[tauri::command]
+pub fn set_ai_enabled(app: AppHandle, settings: tauri::State<'_, Mutex<Settings>>, enabled: bool) -> Settings {
+    app.state::<Ai>().set_enabled(enabled);
+    let mut guard = settings.lock().expect("settings mutex poisoned");
+    guard.ai_enabled = enabled;
+    persist(&app, &guard);
+    guard.clone()
+}
+
+#[tauri::command]
+pub fn get_ai_status(ai: tauri::State<'_, Ai>) -> AiStatus {
+    ai.status()
+}
+
+/// Frees the disk space the model takes (the AI is off).
+#[tauri::command]
+pub fn delete_ai_files(ai: tauri::State<'_, Ai>) -> AiStatus {
+    ai.delete_files();
+    ai.status()
+}
+
+/// Mimo's main color, whether its glass is tinted with it and whether the
+/// pill shows its little face (the "Personnaliser" window); every window
+/// restyles on the change.
+#[tauri::command]
+pub fn set_appearance(
+    app: AppHandle,
+    settings: tauri::State<'_, Mutex<Settings>>,
+    accent_color: String,
+    tinted_glass: bool,
+    character_enabled: bool,
+) -> Result<Settings, String> {
+    mimo_core::validate_accent_color(&accent_color).map_err(|err| err.to_string())?;
+    let mut guard = settings.lock().expect("settings mutex poisoned");
+    guard.accent_color = accent_color.to_lowercase();
+    guard.tinted_glass = tinted_glass;
+    guard.character_enabled = character_enabled;
+    persist(&app, &guard);
+    Ok(guard.clone())
+}
+
+#[tauri::command]
+pub fn open_customize_window(app: AppHandle) {
+    if let Some(menu) = app.get_webview_window("tray-menu") {
+        let _ = menu.hide();
+    }
+    if let Some(window) = app.get_webview_window("customize") {
+        if !window.is_visible().unwrap_or(false) {
+            let _ = window.center();
+        }
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+#[tauri::command]
+pub fn close_customize_window(app: AppHandle) {
+    if let Some(window) = app.get_webview_window("customize") {
+        let _ = window.hide();
+    }
+}
+
 /// Best-effort write: a failed save only loses the preference on restart,
-/// which isn't worth failing the user's toggle over.
+/// which isn't worth failing the user's toggle over. Every window hears of
+/// the change (the tray menu's labels and AI switch, the theme color…).
 fn persist(app: &AppHandle, settings: &Settings) {
     if let Some(path) = settings_path(app) {
         let _ = settings.save(&path);
     }
+    let _ = app.emit("mimo://settings-changed", settings.clone());
 }
 
 /// Wipes everything Mimo has stored locally and resets in-memory state to
@@ -248,6 +314,11 @@ pub fn erase_memory(
     app.state::<Activity>().forget();
     app.state::<Suggestions>().forget();
     app.state::<crate::custom::CustomCommands>().forget(&app);
+    // Its engine holds the model file open, and a download may be writing.
+    let ai = app.state::<Ai>();
+    ai.set_enabled(false);
+    ai.shutdown();
+    std::thread::sleep(std::time::Duration::from_millis(300));
 
     if let Ok(dir) = app.path().app_data_dir() {
         let _ = std::fs::remove_dir_all(&dir);
@@ -258,6 +329,7 @@ pub fn erase_memory(
     let defaults = Settings::default();
     voice.set_enabled(&app, defaults.voice_wake_enabled);
     app.state::<Activity>().set_enabled(defaults.activity_enabled);
+    ai.delete_files();
 
     let mut guard = settings.lock().expect("settings mutex poisoned");
     if !guard.summon_shortcut.eq_ignore_ascii_case(&defaults.summon_shortcut) {
@@ -266,6 +338,7 @@ pub fn erase_memory(
         let _ = global.register(defaults.summon_shortcut.as_str());
     }
     *guard = defaults;
+    let _ = app.emit("mimo://settings-changed", guard.clone());
     Ok(guard.clone())
 }
 
@@ -326,7 +399,16 @@ fn handle_request(app: &AppHandle, request: &str, spoken: bool) -> AskResponseDt
         Ok(intent) => intent,
         Err(reply) => return AskResponseDto::failed(reply),
     };
+    // What the rules don't get, the local AI may.
+    if intent == Intent::Unknown {
+        if let Some(response) = ask_ai(app, request, spoken) {
+            return response;
+        }
+    }
+    handle_intent(app, intent, spoken)
+}
 
+fn handle_intent(app: &AppHandle, intent: Intent, spoken: bool) -> AskResponseDto {
     match intent {
         Intent::Diagnose { lang } => {
             let content = diagnostic(lang);
@@ -381,6 +463,12 @@ fn handle_request(app: &AppHandle, request: &str, spoken: bool) -> AskResponseDt
         Intent::Task { command, lang } => handle_task(app, command, lang),
         Intent::Activity { query, lang } => handle_activity(app, query, lang),
         Intent::Capture { command, lang } => handle_capture(app, command, lang),
+        Intent::Control { command, lang } => {
+            let (reply, ok) = crate::control::run(command, lang);
+            AskResponseDto { ok, ..AskResponseDto::done(reply) }
+        }
+        Intent::Recall { command, lang } => handle_recall(app, command, lang),
+        Intent::TextTool { tool, lang } => handle_text_tool(app, tool, lang, spoken),
         Intent::Translate { request, lang } => match request {
             TranslateRequest::Text { text, target } => match crate::translate::translate(&text, lang, target) {
                 Ok(translation) => AskResponseDto {
@@ -427,6 +515,117 @@ fn handle_capture(app: &AppHandle, command: mimo_core::capture::CaptureCommand, 
     }
 }
 
+/// Hands a request the rules didn't understand to the local AI: it either
+/// rewords it as one of Mimo's own commands (parsed and checked like any
+/// other request) or answers it. `None`: no AI, or it couldn't help.
+fn ask_ai(app: &AppHandle, request: &str, spoken: bool) -> Option<AskResponseDto> {
+    use mimo_core::ai::{allowed, parse_understanding, understanding_prompt, understanding_schema, Understanding};
+    let ai = app.state::<Ai>();
+    if !ai.usable() {
+        return None;
+    }
+    let lang = app_language(app);
+    let now = chrono::Local::now().format("%A %d/%m/%Y, %H:%M").to_string();
+    let output = ai
+        .chat(&understanding_prompt(request, lang, &now), Some(understanding_schema()), 300, AI_TIMEOUT)
+        .map_err(|err| eprintln!("[ai] {err}"))
+        .ok()?;
+    match parse_understanding(&output)? {
+        Understanding::Command(command) => {
+            let intent = mimo_commands::interpret(app, &command).ok()?;
+            eprintln!("[ai] {request:?} -> {command:?} -> {intent:?}");
+            allowed(&intent).then(|| handle_intent(app, intent, spoken))
+        }
+        Understanding::Answer(text) => {
+            let text = mimo_core::ai::clean_text(&text);
+            if spoken {
+                app.state::<Speech>().say(&text, lang);
+            }
+            let title = match lang {
+                Lang::Fr => "Réponse",
+                Lang::En => "Answer",
+            };
+            Some(text_response(text, title, None))
+        }
+    }
+}
+
+/// How long a request to the local AI may take (it may have to load first).
+const AI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+/// Longer than this, a text gets a card instead of the pill's one line.
+const CARD_AFTER_CHARS: usize = 90;
+
+/// A text to read: in the pill if short, in a card if not (or if it was
+/// made from something, shown below it).
+fn text_response(text: String, title: &str, original: Option<String>) -> AskResponseDto {
+    if original.is_none() && text.chars().count() <= CARD_AFTER_CHARS {
+        return AskResponseDto::answer(text);
+    }
+    AskResponseDto {
+        card: Some(mimo_commands::Card { title: title.to_string(), text: text.clone(), original }),
+        ..AskResponseDto::answer(text)
+    }
+}
+
+/// "Résume / corrige / reformule / explique ce que j'ai copié."
+fn handle_text_tool(app: &AppHandle, tool: mimo_core::ai::TextTool, lang: Lang, spoken: bool) -> AskResponseDto {
+    use mimo_core::ai::{
+        clean_text, failed_message, nothing_copied_message, text_tool_prompt, text_tool_title, unavailable_message, TextTool,
+    };
+    // About 2 500 tokens, leaving room for the answer in the context.
+    const MAX_CHARS: usize = 8000;
+    let ai = app.state::<Ai>();
+    if !ai.usable() {
+        return AskResponseDto::failed_answer(unavailable_message(lang, ai.is_downloading()).to_string());
+    }
+    let copied = arboard::Clipboard::new().ok().and_then(|mut c| c.get_text().ok()).unwrap_or_default();
+    let copied = copied.trim();
+    if copied.is_empty() {
+        return AskResponseDto::failed_answer(nothing_copied_message(lang).to_string());
+    }
+    let text: String = copied.chars().take(MAX_CHARS).collect();
+    let max_tokens = match tool {
+        TextTool::Summarize | TextTool::Explain => 400,
+        TextTool::Fix | TextTool::Rephrase => 2000,
+    };
+    match ai.chat(&text_tool_prompt(tool, &text, lang), None, max_tokens, std::time::Duration::from_secs(180)) {
+        Ok(output) => {
+            let result = clean_text(&output);
+            if spoken && matches!(tool, TextTool::Summarize | TextTool::Explain) {
+                app.state::<Speech>().say(&result, lang);
+            }
+            text_response(result, text_tool_title(tool, lang), Some(text))
+        }
+        Err(err) => {
+            eprintln!("[ai] {err}");
+            AskResponseDto::failed_answer(failed_message(lang).to_string())
+        }
+    }
+}
+
+/// A template-made answer reworded as a natural sentence by the local AI,
+/// when it's on — the facts as they are otherwise (or if it fails).
+fn natural(app: &AppHandle, facts: String, lang: Lang) -> String {
+    let ai = app.state::<Ai>();
+    if !ai.usable() {
+        return facts;
+    }
+    match ai.chat(&mimo_core::ai::recap_prompt(&facts, lang), None, 200, std::time::Duration::from_secs(30)) {
+        Ok(output) => {
+            let text = mimo_core::ai::clean_text(&output);
+            if text.is_empty() {
+                facts
+            } else {
+                text
+            }
+        }
+        Err(err) => {
+            eprintln!("[ai] {err}");
+            facts
+        }
+    }
+}
+
 /// "Résumé de ma journée" opens the activity panel; "combien de temps sur
 /// Discord" is answered in the pill.
 fn handle_activity(app: &AppHandle, query: mimo_core::activity::ActivityQuery, lang: Lang) -> AskResponseDto {
@@ -441,7 +640,64 @@ fn handle_activity(app: &AppHandle, query: mimo_core::activity::ActivityQuery, l
         None => {
             let reply = summary.clone();
             panel::show(app, content);
-            AskResponseDto::answer(reply)
+            AskResponseDto::answer(natural(app, reply, lang))
+        }
+    }
+}
+
+/// "Qu'est-ce que je faisais hier vers 15h" is answered in the pill;
+/// "rouvre ce que j'avais ouvert" relaunches those apps (not the ones still
+/// running).
+fn handle_recall(app: &AppHandle, command: mimo_core::recall::RecallCommand, lang: Lang) -> AskResponseDto {
+    use chrono::TimeZone;
+    use mimo_core::activity::disabled_message;
+    use mimo_core::recall::{answer, describe_last_time, format_reopen, last_stretch, plan_reopen, RecallCommand};
+    let activity = app.state::<Activity>();
+    if !activity.is_enabled() {
+        return AskResponseDto::failed_answer(disabled_message(lang).to_string());
+    }
+    let now = chrono::Local::now();
+    let unix = |at: chrono::NaiveDateTime| chrono::Local.from_local_datetime(&at).earliest().map_or(0, |t| t.timestamp());
+
+    match command {
+        RecallCommand::WhatWasI(moment) => {
+            let span = moment.resolve(now.naive_local());
+            let (from, to) = (unix(span.from), unix(span.to));
+            let sessions = activity.sessions(from, to);
+            let facts = answer(&sessions, from, to, span.point.map(unix), span.moment, lang);
+            let reply = if sessions.is_empty() { facts } else { natural(app, facts, lang) };
+            text_response(reply, &span.moment.describe(lang), None)
+        }
+        RecallCommand::Reopen(moment) => {
+            let (from, to, when) = match moment {
+                Some(moment) => {
+                    let span = moment.resolve(now.naive_local());
+                    (unix(span.from), unix(span.to), span.moment.describe(lang))
+                }
+                None => {
+                    // The last stretch before a break, within the last 2 days.
+                    let recent = activity.sessions(now.timestamp() - 2 * 86_400, now.timestamp());
+                    let (from, to) = last_stretch(&recent, now.timestamp());
+                    (from, to, describe_last_time(lang).to_string())
+                }
+            };
+            let sessions = activity.sessions(from, to);
+            let apps = app.state::<Mutex<Engine>>().lock().expect("engine mutex poisoned").installed_apps().clone();
+            let plan = plan_reopen(&sessions, from, to, &crate::suggestions::running_apps(), &apps);
+            for target in &plan.launch {
+                if let Err(err) = std::process::Command::new("explorer.exe")
+                    .arg(format!("shell:AppsFolder\\{}", target.app_id))
+                    .spawn()
+                {
+                    eprintln!("[recall] can't launch {}: {err}", target.name);
+                }
+            }
+            let reply = format_reopen(&plan, &when, lang);
+            if plan.launch.is_empty() {
+                AskResponseDto::answer(reply)
+            } else {
+                AskResponseDto::done(reply)
+            }
         }
     }
 }

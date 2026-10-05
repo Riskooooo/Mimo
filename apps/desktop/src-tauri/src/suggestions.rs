@@ -192,6 +192,13 @@ fn check(
     present(app, &suggestion);
 }
 
+/// Keys of the running processes ("chrome"), as activity names apps.
+pub(crate) fn running_apps() -> HashSet<String> {
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    system.processes().values().map(|p| exe_key(&p.name().to_string_lossy())).collect()
+}
+
 /// "Chrome.exe" → "chrome", matching activity's app keys.
 fn exe_key(name: &str) -> String {
     let lower = name.to_lowercase();

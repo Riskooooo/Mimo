@@ -1,7 +1,9 @@
 mod activity;
+mod ai;
 mod apps;
 mod capture;
 mod commands;
+mod control;
 mod custom;
 mod diagnostics;
 mod notifications;
@@ -39,7 +41,7 @@ const TOP_OFFSET: f64 = 14.0;
 
 /// Extra window height (logical px) given to the settings drawer when open —
 /// matched by `.settings-panel.open`'s height in the frontend.
-pub(crate) const SETTINGS_PANEL_HEIGHT: f64 = 357.0;
+pub(crate) const SETTINGS_PANEL_HEIGHT: f64 = 419.0;
 
 /// Gap (physical px) between the tray-menu popup and the tray icon it opened from.
 const TRAY_MENU_GAP: i32 = 8;
@@ -98,6 +100,12 @@ pub fn run() {
             commands::set_activity_enabled,
             commands::answer_suggestion,
             commands::set_suggestions_enabled,
+            commands::set_ai_enabled,
+            commands::get_ai_status,
+            commands::delete_ai_files,
+            commands::set_appearance,
+            commands::open_customize_window,
+            commands::close_customize_window,
         ])
         .setup(|app| {
             app.manage(mimo_commands::init_engine_state());
@@ -134,6 +142,7 @@ pub fn run() {
             let activity = activity::Activity::new(app.handle(), settings.activity_enabled);
             activity.start();
             app.manage(activity);
+            app.manage(ai::Ai::new(app.handle(), settings.ai_enabled));
             app.manage(suggestions::Suggestions::load(app.handle()));
             suggestions::Suggestions::start(app.handle().clone());
             app.manage(Mutex::new(settings));
@@ -215,6 +224,8 @@ pub(crate) fn summon(app: &AppHandle, source: &str) {
         if !window.is_visible().unwrap_or(false) {
             place_island(&window);
         }
+        // Loads the local AI meanwhile, if it's on and asleep.
+        app.state::<ai::Ai>().warm_up();
         // A suggestion may have left it unfocusable (see `suggestions`).
         let _ = window.set_focusable(true);
         let _ = window.show();

@@ -3,6 +3,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount } from "svelte";
+  import { watchTheme } from "$lib/theme";
   import { fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
 
@@ -173,6 +174,8 @@
     apps = await invoke<AppChoice[]>("list_installed_apps");
   }
 
+  onMount(watchTheme);
+
   onMount(() => {
     void load();
     // The window is only hidden between uses: reload when it comes back.
@@ -330,6 +333,7 @@
     overflow: hidden;
     background:
       linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0) 30%),
+      linear-gradient(160deg, rgba(var(--accent-rgb), var(--tint)), rgba(var(--accent-rgb), 0) 80%),
       linear-gradient(165deg, #26262d, #111115);
     box-shadow:
       0 1px 0 rgba(255, 255, 255, 0.12) inset,
@@ -400,7 +404,7 @@
   }
 
   .row.selected {
-    background: rgba(10, 132, 255, 0.12);
+    background: rgba(var(--accent-rgb), 0.12);
   }
 
   .row-text {
@@ -442,8 +446,8 @@
   }
 
   .icon.edit:hover {
-    background: rgba(10, 132, 255, 0.2);
-    color: #0a84ff;
+    background: rgba(var(--accent-rgb), 0.2);
+    color: var(--accent);
   }
 
   .icon.delete {
@@ -492,7 +496,7 @@
 
   .editor input:focus,
   .editor select:focus {
-    box-shadow: 0 0 0 1.5px #0a84ff inset;
+    box-shadow: 0 0 0 1.5px var(--accent) inset;
   }
 
   .editor input::placeholder {
@@ -522,8 +526,8 @@
   }
 
   .chip.on {
-    background: #0a84ff;
-    color: #fff;
+    background: var(--accent);
+    color: var(--on-accent);
   }
 
   .error,
@@ -559,7 +563,8 @@
   }
 
   .button.primary {
-    background: #0a84ff;
+    background: var(--accent);
+    color: var(--on-accent);
   }
 
   .empty {

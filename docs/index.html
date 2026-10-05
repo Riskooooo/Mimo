@@ -146,9 +146,67 @@
     a:hover {
       color: #32d74b;
     }
+
+    /* The character's moods, blurred on the sides of the page. */
+    .mimo-faces {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    .mimo-face {
+      position: absolute;
+      opacity: var(--o);
+      filter: blur(var(--blur));
+      animation: mimo-drift 9s ease-in-out infinite;
+    }
+
+    .mimo-face svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+    }
+
+    @keyframes mimo-drift {
+      0%, 100% { translate: 0 0; }
+      50% { translate: 0 -14px; }
+    }
+
+    main {
+      position: relative;
+      z-index: 1;
+    }
+
+    /* On narrow screens they'd sit behind the text: fainter and smaller. */
+    @media (max-width: 1000px) {
+      .mimo-face {
+        opacity: calc(var(--o) * 0.45);
+        scale: 0.65;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .mimo-face {
+        animation: none;
+      }
+    }
   </style>
 </head>
 <body>
+  <!-- Mimo's character in a few of its moods, drifting behind the page. -->
+  <div class="mimo-faces" aria-hidden="true">
+    <div class="mimo-face" style="top: 9%; left: 7%; width: 118px; height: 118px; --blur: 3px; --o: 0.5; animation-delay: 0s"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="1.6" y="3" width="20.8" height="19" rx="9.2" fill="#32d74b"/><ellipse cx="8" cy="6.6" rx="3.6" ry="1.5" fill="rgba(255,255,255,.28)"/><path transform="translate(9.40 10.60)" d="M-1.49 0.44 Q0 -1.50 1.49 0.44" fill="none" stroke="#15151b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path transform="translate(14.60 10.60)" d="M-1.49 0.44 Q0 -1.50 1.49 0.44" fill="none" stroke="#15151b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><g transform="translate(12.00 16.20)"><path d="M-2.2 -.6 Q0 1.9 2.2 -.6" fill="none" stroke="#15151b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g></svg></div>
+    <div class="mimo-face" style="top: 38%; left: 2%; width: 84px; height: 84px; --blur: 5px; --o: 0.38; animation-delay: -2.2s"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="1.6" y="3" width="20.8" height="19" rx="9.2" fill="#bf5af2"/><ellipse cx="8" cy="6.6" rx="3.6" ry="1.5" fill="rgba(255,255,255,.28)"/><rect transform="translate(8.20 9.60)" x="-1.2" y="-2.2" width="2.4" height="4.4" rx="1.2" fill="#15151b"/><rect transform="translate(13.40 9.60)" x="-1.2" y="-2.2" width="2.4" height="4.4" rx="1.2" fill="#15151b"/><g transform="translate(10.80 15.20)"><path d="M-.7 .2 L1.5 -.4" fill="none" stroke="#15151b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g></svg></div>
+    <div class="mimo-face" style="top: 63%; left: 9%; width: 132px; height: 132px; --blur: 4px; --o: 0.42; animation-delay: -4.1s"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="1.6" y="3" width="20.8" height="19" rx="9.2" fill="#ff9f0a"/><ellipse cx="8" cy="6.6" rx="3.6" ry="1.5" fill="rgba(255,255,255,.28)"/><path transform="translate(9.40 10.60)" d="M-1.44 0.18 Q0 0.88 1.44 0.18" fill="none" stroke="#15151b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path transform="translate(14.60 10.60)" d="M-1.44 0.18 Q0 0.88 1.44 0.18" fill="none" stroke="#15151b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><g transform="translate(12.00 16.20)"><circle r=".55" cy=".1" fill="none" stroke="#15151b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g><text x="19.5" y="4" font-size="5" font-weight="800" font-family="Segoe UI, sans-serif" fill="#ff9f0a">z</text><text x="22" y="0.5" font-size="3.6" font-weight="800" font-family="Segoe UI, sans-serif" fill="#ff9f0a">z</text></svg></div>
+    <div class="mimo-face" style="top: 86%; left: 3%; width: 74px; height: 74px; --blur: 6px; --o: 0.32; animation-delay: -1.3s"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="1.6" y="3" width="20.8" height="19" rx="9.2" fill="#64d2ff"/><ellipse cx="8" cy="6.6" rx="3.6" ry="1.5" fill="rgba(255,255,255,.28)"/><circle transform="translate(9.40 10.60)" r="1.63" fill="#15151b"/><circle transform="translate(14.60 10.60)" r="1.63" fill="#15151b"/><g transform="translate(12.00 16.20)"><circle r="1.4" cy=".2" fill="none" stroke="#15151b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g></svg></div>
+    <div class="mimo-face" style="top: 6%; right: 4%; width: 92px; height: 92px; --blur: 5px; --o: 0.4; animation-delay: -3.3s"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="1.6" y="3" width="20.8" height="19" rx="9.2" fill="#ff375f"/><ellipse cx="8" cy="6.6" rx="3.6" ry="1.5" fill="rgba(255,255,255,.28)"/><rect transform="translate(9.40 10.60)" x="-1.2" y="-2.64" width="2.4" height="5.28" rx="1.2" fill="#15151b"/><rect transform="translate(14.60 10.60)" x="-1.2" y="-2.64" width="2.4" height="5.28" rx="1.2" fill="#15151b"/><g transform="translate(12.00 16.20)"><circle r=".95" cy=".1" fill="none" stroke="#15151b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g></svg></div>
+    <div class="mimo-face" style="top: 30%; right: 9%; width: 140px; height: 140px; --blur: 3px; --o: 0.5; animation-delay: -0.7s"><svg viewBox="0 0 24 24" aria-hidden="true" style="transform: rotate(-12deg)"><rect x="1.6" y="3" width="20.8" height="19" rx="9.2" fill="#0a84ff"/><ellipse cx="8" cy="6.6" rx="3.6" ry="1.5" fill="rgba(255,255,255,.28)"/><rect transform="translate(10.50 10.30)" x="-1.2" y="-2.2" width="2.4" height="4.4" rx="1.2" fill="#15151b"/><rect transform="translate(15.70 10.30)" x="-1.2" y="-2.2" width="2.4" height="4.4" rx="1.2" fill="#15151b"/><g transform="translate(13.10 15.90)"><path d="M-2.2 -.6 Q0 1.9 2.2 -.6" fill="none" stroke="#15151b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g></svg></div>
+    <div class="mimo-face" style="top: 57%; right: 3%; width: 80px; height: 80px; --blur: 6px; --o: 0.34; animation-delay: -5.0s"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="1.6" y="3" width="20.8" height="19" rx="9.2" fill="#ffd60a"/><ellipse cx="8" cy="6.6" rx="3.6" ry="1.5" fill="rgba(255,255,255,.28)"/><path transform="translate(9.40 10.60)" d="M-1.44 0.62 L1.44 -0.44" fill="none" stroke="#15151b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path transform="translate(14.60 10.60)" d="M-1.44 -0.44 L1.44 0.62" fill="none" stroke="#15151b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><g transform="translate(12.00 16.20)"><path d="M-1.8 .8 Q0 -.9 1.8 .8" fill="none" stroke="#15151b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g></svg></div>
+    <div class="mimo-face" style="top: 80%; right: 8%; width: 112px; height: 112px; --blur: 4px; --o: 0.44; animation-delay: -2.8s"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="1.6" y="3" width="20.8" height="19" rx="9.2" fill="#5e5ce6"/><ellipse cx="8" cy="6.6" rx="3.6" ry="1.5" fill="rgba(255,255,255,.28)"/><rect transform="translate(8.60 11.20)" x="-1.2" y="-2.2" width="2.4" height="4.4" rx="1.2" fill="#15151b"/><rect transform="translate(13.80 11.20)" x="-1.2" y="-2.2" width="2.4" height="4.4" rx="1.2" fill="#15151b"/><g transform="translate(11.20 16.80)"><path d="M-1.5 -.1 Q0 .8 1.5 -.1" fill="none" stroke="#15151b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g></svg></div>
+  </div>
   <main>
     <img class="logo" src="logo.png" alt="Mimo" width="96" height="96" />
 
@@ -189,6 +247,10 @@
         <p>“Squeezie on YouTube”, “Gotaga on Twitch”, a song on Spotify, the latest video of a channel — straight to the right page.</p>
       </div>
       <div class="card">
+        <h2>System controls</h2>
+        <p>Volume, mute, screen brightness, pause or next song, lock the PC or put it to sleep — just ask.</p>
+      </div>
+      <div class="card">
         <h2>Quick answers</h2>
         <p>Time, date and the weather, for your area or any city.</p>
       </div>
@@ -209,6 +271,10 @@
         <p>Learns your routines and offers to open your usual apps, close one that slows the PC down, empty a full recycle bin, plug in a low battery or take a break.</p>
       </div>
       <div class="card">
+        <h2>Look back</h2>
+        <p>“What was I doing yesterday around 3 pm?” — and “reopen what I had open” brings those apps back.</p>
+      </div>
+      <div class="card">
         <h2>Screenshots &amp; recordings</h2>
         <p>“Take a screenshot”, “record the screen”: saved to Pictures and Videos, without Mimo in the shot.</p>
       </div>
@@ -221,6 +287,18 @@
         <p>Translates a sentence, or whatever you copy next, between English and French.</p>
       </div>
       <div class="card">
+        <h2>Local AI</h2>
+        <p>Optional and free: a small AI that runs on your PC to understand any wording, answer questions and summarize or fix what you copy. Nothing goes online.</p>
+      </div>
+      <div class="card">
+        <h2>A little face</h2>
+        <p>Mimo has a tiny character that listens, thinks, smiles, frowns and dozes off — and follows your pointer with its eyes.</p>
+      </div>
+      <div class="card">
+        <h2>Your colors</h2>
+        <p>Pick Mimo's color — for the pill, the buttons and every window — and tint its glass if you like.</p>
+      </div>
+      <div class="card">
         <h2>Platform &amp; stack</h2>
         <p>Windows only, for now. Tauri 2 (Rust) for the native shell, Svelte and TypeScript for the interface.</p>
       </div>
@@ -230,8 +308,8 @@
       <strong>Privacy.</strong> No telemetry, and your settings, reminders,
       tasks, commands and activity history stay on your PC. Mimo only goes online to open the links you ask
       for, to fetch the weather (Open-Meteo, plus ipwho.is to estimate your
-      location when no city is given), and to translate text (sent to Google
-      Translate).
+      location when no city is given), to translate text (sent to Google
+      Translate) and, if you turn on the local AI, to download it once.
     </p>
 
     <footer>

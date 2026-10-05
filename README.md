@@ -10,11 +10,14 @@ The project is in early development. Mimo already understands typed and spoken r
 
 ## Features
 
-- **Floating pill** - borderless window at the top-center of the screen, responsive to screen size/DPI, auto-hides when idle, with a system tray icon and a right-click quick menu
+- **Floating pill** - borderless window at the top-center of the screen, responsive to screen size/DPI, auto-hides when idle, with a system tray icon and a right-click quick menu (local AI on/off with its download progress, settings, customize, close)
+- **Character** - a tiny face in the pill (on by default) that reacts to what Mimo does: listens wide-eyed, looks around while thinking, smiles and hops when it worked, shakes its head when it didn't, tilts its head for a suggestion, trembles for an alarm, dozes off at night - and its eyes follow your pointer. Can be turned off in Customize to get the plain status dot back
+- **Customize** - pick Mimo's color (12 presets or any color) for the pill, buttons and every window, optionally tint their glass with it, and show or hide the character; from the settings or the tray menu
 - **Summon** - global shortcut (`F9` by default, any key or combination you like) for a typed request, or say "Hey Mimo" for a spoken one
 - **Offline voice recognition** - [Vosk](https://alphacephei.com/vosk/) runs entirely on the machine; only the model for the selected language is loaded
 - **Open apps and sites** - installed Start menu apps (desktop and Store), common websites and built-in Windows programs, by name ("open spotify", "ouvre youtube")
 - **Search on platforms** - "mets squeezie sur youtube", "gotaga sur twitch", "damso feu de bois sur spotify", "ouvre spotify et affiche damso", "the latest video from inoxtag" - straight to the right page (YouTube, Twitch, Spotify app or web, Deezer, Netflix, Google Maps, Amazon, TikTok, X, Reddit…)
+- **System controls** - "turn up the volume", "mets le son à 30", "mute", "baisse la luminosité" (built-in screens), "pause", "next song", "lock the PC", "mets le PC en veille"
 - **Quick answers** - time, date and weather (for your area or a named city)
 - **PC check-up** - CPU, memory, disk, temperature, battery and GPU readings with plain-language advice, shown in a dedicated panel
 - **Notifications** - lists recent Windows notifications, and reads them aloud when asked by voice
@@ -26,9 +29,11 @@ The project is in early development. Mimo already understands typed and spoken r
 - **Your own commands** - in the settings, "My commands" lets you choose what a phrase does: a reply, a website, an installed app or another request
 - **Translation** - translate typed text, or whatever you copy next, between French and English
 - **Activity insights** - learns which apps you use and when (stored only on your PC, 30 days); ask for your screen time or a summary of your day
+- **Look back** - "what was I doing yesterday around 3 pm?", "qu'est-ce que j'ai fait ce matin ?" (the apps and window titles of that moment), and "reopen what I had open" / "rouvre ce que j'avais ouvert hier" to relaunch those apps (apps only, not documents or tabs)
 - **Suggestions** - offers on its own to open the apps you usually start around this time, to close an app that's slowing the PC down, to empty a full recycle bin, to take a break or to go to bed - never over a fullscreen game or video (except a low battery warning), never stealing focus
 - **Low battery** - reminds you to plug in the charger at 20 %, more urgently at 10 %
-- **Settings** - language (English / French), launch at Windows startup, summon shortcut, "Hey Mimo" on/off, activity analysis and suggestions on/off (separately), sounds, your own commands, erase all local data; the version is shown at the bottom
+- **Local AI (optional, off by default)** - turn it on in the settings and Mimo downloads, once and in the background (progress bar, resumable), a small language model ([Qwen3 4B Instruct](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507), Apache 2.0, ~2.5 GB) and the [llama.cpp](https://github.com/ggml-org/llama.cpp) engine (MIT). It then runs entirely on your PC - free, no account, nothing sent online. It understands requests worded any way ("I can't hear anything" → turns the volume up; it only ever picks one of Mimo's own actions), answers free questions ("what is photosynthesis?"), summarizes, fixes or rephrases the text you copied, and words your day's summary naturally. The engine starts when needed, uses your graphics card if it can (Vulkan), runs at low priority and stops after 10 minutes unused
+- **Settings** - language (English / French), launch at Windows startup, summon shortcut, "Hey Mimo" on/off, activity analysis and suggestions on/off (separately), sounds, local AI (with its download progress, and a button to delete its files), customize, your own commands, erase all local data; the version is shown at the bottom
 
 ## Privacy
 
@@ -37,14 +42,15 @@ Mimo has no telemetry and keeps its data (settings, reminders, tasks, your comma
 - opening the URLs you ask for
 - weather: [Open-Meteo](https://open-meteo.com/) for the forecast and city lookup, and [ipwho.is](https://ipwho.is/) to approximate your location from your IP when no city is given
 - translation: the text to translate is sent to Google Translate
+- local AI, only if you turn it on: a one-time download of the engine from GitHub and of the model from Hugging Face (after that, the AI works offline)
 
 ## Architecture
 
 The project is a Cargo workspace, split so the core logic stays independent of the UI:
 
-- `crates/core` (`mimo-core`) - engine, settings and all the logic: request parsing (FR/EN), platform searches, small talk, your own commands, app matching, reminders, tasks, check-up advice, suggestions. No Tauri dependency, unit-testable on its own.
+- `crates/core` (`mimo-core`) - engine, settings and all the logic: request parsing (FR/EN), platform searches, system controls, looking back at activity, small talk, your own commands, app matching, reminders, tasks, check-up advice, suggestions. No Tauri dependency, unit-testable on its own.
 - `crates/commands` (`mimo-commands`) - thin bridge exposing `mimo-core` to the frontend as Tauri commands.
-- `apps/desktop` - the Tauri shell: Svelte/TypeScript frontend (pill, tray menu, panel, commands window), window management, and OS integration (voice, sounds, installed apps, notifications, system readings, screen capture, persistence).
+- `apps/desktop` - the Tauri shell: Svelte/TypeScript frontend (pill, tray menu, panel, commands window), window management, and OS integration (voice, sounds, volume/brightness/media keys, installed apps, notifications, system readings, screen capture, persistence).
 
 This separation means the core engine can evolve, be tested, and eventually be reused without being coupled to how the UI is built.
 

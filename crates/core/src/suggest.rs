@@ -477,7 +477,7 @@ fn clock(minutes: i64, lang: Lang) -> String {
     }
 }
 
-fn join(names: &[&str], and: &str) -> String {
+pub(crate) fn join(names: &[&str], and: &str) -> String {
     match names {
         [] => String::new(),
         [one] => one.to_string(),

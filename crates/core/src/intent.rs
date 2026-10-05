@@ -13,7 +13,9 @@ use crate::activity::{self, ActivityQuery};
 use crate::apps::{AppCatalog, InstalledApp};
 use crate::capture::{self, CaptureCommand};
 use crate::chat;
+use crate::control::{self, ControlCommand};
 use crate::platforms;
+use crate::recall::{self, RecallCommand};
 use crate::info::{self, Lang, Question};
 use crate::reminders::{self, ReminderCommand};
 use crate::tasks::{self, TaskCommand};
@@ -48,6 +50,12 @@ pub enum Intent {
     Help { lang: Lang },
     /// One of the user's own commands (see [`crate::custom`]).
     Custom { action: crate::custom::CustomAction, lang: Lang },
+    /// Volume, brightness, media keys, lock/sleep (done by the shell).
+    Control { command: ControlCommand, lang: Lang },
+    /// "Qu'est-ce que je faisais hier ?", "rouvre ce que j'avais ouvert".
+    Recall { command: RecallCommand, lang: Lang },
+    /// "Résume ce que j'ai copié", "corrige les fautes" (local AI).
+    TextTool { tool: crate::ai::TextTool, lang: Lang },
     Unknown,
 }
 
@@ -78,7 +86,10 @@ impl Intent {
             | Intent::Capture { .. }
             | Intent::Chat { .. }
             | Intent::Help { .. }
-            | Intent::Custom { .. } => "…".to_string(),
+            | Intent::Custom { .. }
+            | Intent::Control { .. }
+            | Intent::Recall { .. }
+            | Intent::TextTool { .. } => "…".to_string(),
             Intent::Unknown => match lang {
                 Lang::Fr => "Désolé, je n'ai pas compris. Essaie « ouvre youtube ».".to_string(),
                 Lang::En => "Sorry, I didn't get that. Try “open youtube”.".to_string(),
@@ -299,6 +310,9 @@ pub fn voice_phrases(language: &str, apps: &AppCatalog) -> Vec<String> {
     phrases.extend(capture::voice_phrases(language).iter().map(|q| q.to_string()));
     phrases.extend(chat::voice_phrases(language).iter().map(|q| q.to_string()));
     phrases.extend(platforms::voice_phrases(language));
+    phrases.extend(control::voice_phrases(language));
+    phrases.extend(recall::voice_phrases(language));
+    phrases.extend(crate::ai::voice_phrases(language).iter().map(|q| q.to_string()));
 
     // Installed apps, by name, with the verbs people use for programs.
     let mut seen: HashSet<String> = phrases.iter().cloned().collect();
@@ -365,6 +379,13 @@ pub fn parse_in(request: &str, apps: &AppCatalog, lang: Option<Lang>) -> Intent 
     if let Some(request) = translate::detect(request) {
         return Intent::Translate { request, lang: lang_or_detected };
     }
+    if let Some(tool) = crate::ai::detect_text_tool(&tokens) {
+        return Intent::TextTool { tool, lang: lang_or_detected };
+    }
+    // Before tasks: "qu'est-ce que j'ai fait hier" isn't ticking a task off.
+    if let Some(command) = recall::detect(&tokens) {
+        return Intent::Recall { command, lang: lang_or_detected };
+    }
     if let Some(command) = tasks::detect(request) {
         return Intent::Task { command, lang: lang_or_detected };
     }
@@ -401,6 +422,10 @@ pub fn parse_in(request: &str, apps: &AppCatalog, lang: Option<Lang>) -> Intent 
     }
     if let Some(command) = capture::detect(&tokens) {
         return Intent::Capture { command, lang };
+    }
+    // After reminders: "rappelle-moi de baisser le son" is a reminder.
+    if let Some(command) = control::detect(&tokens) {
+        return Intent::Control { command, lang };
     }
     if system::is_diagnostic_request(&tokens) {
         return Intent::Diagnose { lang };
@@ -873,6 +898,19 @@ mod tests {
         assert!(matches!(parse("hey mimo traduis"), Intent::Translate { request: TranslateRequest::FromClipboard { .. }, .. }));
         // Still opens the site.
         assert!(matches!(parse("ouvre google translate"), Intent::OpenUrl { .. }));
+    }
+
+    #[test]
+    fn controls_and_recall_are_recognized() {
+        assert!(matches!(parse("hey mimo, baisse le son s'il te plaît"), Intent::Control { command: ControlCommand::Volume(_), .. }));
+        assert!(matches!(parse("mets pause"), Intent::Control { command: ControlCommand::PlayPause, .. }));
+        assert!(matches!(parse("rappelle-moi de baisser le son à 18h"), Intent::Reminder { .. }));
+        assert!(matches!(parse("qu'est-ce que j'ai fait hier"), Intent::Recall { command: RecallCommand::WhatWasI(_), .. }));
+        assert!(matches!(parse("j'ai fini les courses"), Intent::Task { .. }));
+        assert!(matches!(parse("rouvre ce que j'avais ouvert"), Intent::Recall { command: RecallCommand::Reopen(None), .. }));
+        // Still platforms.
+        assert!(matches!(parse("mets squeezie sur youtube"), Intent::Search { .. }));
+        assert!(matches!(parse("joue damso sur spotify"), Intent::Search { .. }));
     }
 
     #[test]

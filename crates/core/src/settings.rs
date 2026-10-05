@@ -37,6 +37,26 @@ pub struct Settings {
     pub activity_enabled: bool,
     /// Let Mimo suggest things on its own (needs `activity_enabled`).
     pub suggestions_enabled: bool,
+    /// The local AI (downloaded when first turned on).
+    pub ai_enabled: bool,
+    /// Mimo's main color ("#rrggbb"), in every window.
+    pub accent_color: String,
+    /// Tints the glass of Mimo's windows with that color.
+    pub tinted_glass: bool,
+    /// Mimo's little face in the pill (otherwise, the status dot).
+    pub character_enabled: bool,
+}
+
+pub const DEFAULT_ACCENT_COLOR: &str = "#0a84ff";
+
+/// A color as "#rrggbb".
+pub fn validate_accent_color(color: &str) -> Result<(), CoreError> {
+    let hex = color.strip_prefix('#').unwrap_or_default();
+    if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(CoreError::InvalidColor(color.to_string()))
+    }
 }
 
 impl Default for Settings {
@@ -49,6 +69,10 @@ impl Default for Settings {
             sounds_enabled: true,
             activity_enabled: true,
             suggestions_enabled: true,
+            ai_enabled: false,
+            accent_color: DEFAULT_ACCENT_COLOR.to_string(),
+            tinted_glass: false,
+            character_enabled: true,
         }
     }
 }
@@ -87,6 +111,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn accent_colors_are_checked() {
+        assert!(validate_accent_color("#0a84ff").is_ok());
+        assert!(validate_accent_color("#FF375F").is_ok());
+        for bad in ["0a84ff", "#0a84f", "#0a84fg", "red", "#0a84ff; x", ""] {
+            assert!(validate_accent_color(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn older_settings_files_still_load() {
         let settings: Settings = serde_json::from_str(r#"{ "launch_at_startup": true }"#).unwrap();
         assert!(settings.launch_at_startup);
@@ -94,6 +127,10 @@ mod tests {
         assert!(settings.voice_wake_enabled);
         assert!(settings.activity_enabled);
         assert!(settings.suggestions_enabled);
+        assert!(!settings.ai_enabled);
+        assert_eq!(settings.accent_color, DEFAULT_ACCENT_COLOR);
+        assert!(!settings.tinted_glass);
+        assert!(settings.character_enabled);
         assert_eq!(settings.language, "en");
         assert!(settings.sounds_enabled);
     }

@@ -32,6 +32,19 @@ sysinfo = "0.39"
 rusqlite = { version = "0.40", features = ["bundled"] }
 ureq = "3"
 arboard = "3"
+sha2 = "0.10"
 windows-capture = "2"
+# Core Audio (volume), media keys, lock/sleep. Same version as Tauri's.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_System_Com",
+    "Win32_System_Power",
+    "Win32_System_Shutdown",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
 mimo-core = { path = "../../../crates/core" }
 mimo-commands = { path = "../../../crates/commands" }

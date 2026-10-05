@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
+  import { watchTheme } from "$lib/theme";
   import { fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
 
@@ -174,7 +175,8 @@
   const YELLOW = "#ffd60a";
   const ORANGE = "#ff9f0a";
   const RED = "#ff453a";
-  const BLUE = "#0a84ff";
+  // The theme color (see src/lib/theme.ts).
+  const BLUE = "var(--accent)";
 
   function loadColor(percent: number) {
     if (percent >= 90) return RED;
@@ -418,6 +420,8 @@
   function handleKeydown(event: KeyboardEvent) {
     if (event.key === "Escape") void close();
   }
+
+  onMount(watchTheme);
 
   onMount(() => {
     void invoke<Content | null>("get_panel_content").then((current) => {
@@ -785,6 +789,7 @@
     overflow: hidden;
     background:
       linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0) 30%),
+      linear-gradient(160deg, rgba(var(--accent-rgb), var(--tint)), rgba(var(--accent-rgb), 0) 80%),
       linear-gradient(165deg, #26262d, #111115);
     box-shadow:
       0 1px 0 rgba(255, 255, 255, 0.12) inset,
@@ -1059,7 +1064,7 @@
     width: 100%;
     min-height: 2px;
     border-radius: 3px;
-    background: #0a84ff;
+    background: var(--accent);
     transform-origin: bottom;
     animation: chart-grow 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
   }
@@ -1096,8 +1101,8 @@
     border: none;
     border-radius: 999px;
     padding: 7px 14px;
-    background: rgba(10, 132, 255, 0.18);
-    color: #64b5ff;
+    background: rgba(var(--accent-rgb), 0.18);
+    color: var(--accent-text);
     font: inherit;
     font-size: 0.8rem;
     font-weight: 600;
@@ -1106,7 +1111,7 @@
   }
 
   .pill-button:hover:not(:disabled) {
-    background: rgba(10, 132, 255, 0.28);
+    background: rgba(var(--accent-rgb), 0.28);
   }
 
   .pill-button:disabled {
@@ -1198,7 +1203,7 @@
   }
 
   .check:hover {
-    border-color: #0a84ff;
+    border-color: var(--accent);
   }
 
   .check.red {
@@ -1210,9 +1215,9 @@
   }
 
   .task.done .check {
-    border-color: #0a84ff;
-    background: #0a84ff;
-    color: #fff;
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--on-accent);
   }
 
   .task.done .task-title {
@@ -1237,7 +1242,7 @@
     padding: 12px 14px;
     border-radius: 16px;
     background: rgba(255, 255, 255, 0.07);
-    color: #0a84ff;
+    color: var(--accent);
     box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
   }
 
@@ -1289,8 +1294,8 @@
   }
 
   .edit:hover {
-    background: rgba(10, 132, 255, 0.2);
-    color: #0a84ff;
+    background: rgba(var(--accent-rgb), 0.2);
+    color: var(--accent);
   }
 
   .task.editing {
@@ -1315,7 +1320,7 @@
   }
 
   .task.editing input:focus {
-    box-shadow: 0 0 0 1.5px #0a84ff inset;
+    box-shadow: 0 0 0 1.5px var(--accent) inset;
   }
 
   .task.editing input:disabled {
@@ -1373,7 +1378,8 @@
   }
 
   .text-button.primary {
-    background: #0a84ff;
+    background: var(--accent);
+    color: var(--on-accent);
   }
 
   .text-button:disabled {

@@ -5,6 +5,8 @@
   import { getVersion } from "@tauri-apps/api/app";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { onMount } from "svelte";
+  import { watchTheme } from "$lib/theme";
+  import Character, { type Mood } from "$lib/Character.svelte";
   import { fade } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
 
@@ -17,7 +19,17 @@
     sounds_enabled: boolean;
     activity_enabled: boolean;
     suggestions_enabled: boolean;
+    ai_enabled: boolean;
+    accent_color: string;
+    tinted_glass: boolean;
+    character_enabled: boolean;
   };
+  // The local AI's download/readiness (see src-tauri/src/ai).
+  type AiStatus =
+    | { state: "off"; installed: boolean; size: number }
+    | { state: "downloading"; done: number; total: number }
+    | { state: "ready" }
+    | { state: "error"; message: string };
   type Language = "en" | "fr";
 
   // Every word the pill and its settings show, per the Language setting
@@ -44,6 +56,12 @@
       sounds: "Sounds",
       activity: "Analyze my activity",
       suggestions: "Suggestions",
+      ai: "Local AI",
+      customize: "Customize",
+      aiDelete: "Delete",
+      aiDeleteTitle: "Delete the AI's files from this PC",
+      aiError: "The AI download failed. Turn it off and on to retry.",
+      gb: "GB",
       suggestion: "Suggestion",
       open: "Open",
       closeApp: "Close it",
@@ -81,6 +99,12 @@
       sounds: "Sons",
       activity: "Analyser mon activité",
       suggestions: "Suggestions",
+      ai: "IA locale",
+      customize: "Personnaliser",
+      aiDelete: "Supprimer",
+      aiDeleteTitle: "Supprimer les fichiers de l'IA de ce PC",
+      aiError: "Le téléchargement de l'IA a échoué. Désactive puis réactive pour réessayer.",
+      gb: "Go",
       suggestion: "Suggestion",
       open: "Ouvrir",
       closeApp: "Le fermer",
@@ -99,6 +123,9 @@
     },
   };
   type Translation = { original: string; translated: string; from: string; to: string };
+  // What the card under the bar shows: a translation, an AI answer, a
+  // summary of copied text… (`label`: in the bar; `chip`: above the text).
+  type Card = { label: string; chip: string; text: string; original: string | null };
   type AskResponse = {
     ok: boolean;
     reply: string;
@@ -106,6 +133,7 @@
     translation: Translation | null;
     awaiting_copy: boolean;
     help: boolean;
+    card: { title: string; text: string; original: string | null } | null;
   };
   type VoiceResult = { text: string | null; error: string | null };
   // "reminder": brought up by a due reminder/alarm (mode comes with the
@@ -217,9 +245,42 @@
     sounds_enabled: true,
     activity_enabled: true,
     suggestions_enabled: true,
+    ai_enabled: false,
+    accent_color: "#0a84ff",
+    tinted_glass: false,
+    character_enabled: true,
   });
+  let aiStatus = $state<AiStatus>({ state: "off", installed: false, size: 0 });
+  const aiPercent = $derived(
+    aiStatus.state === "downloading" && aiStatus.total > 0 ? Math.floor((aiStatus.done * 100) / aiStatus.total) : 0,
+  );
 
   const t = $derived(TEXT[settings.language] ?? TEXT.en);
+
+  // The character's face for what the pill is doing.
+  const mood = $derived.by((): Mood => {
+    switch (mode) {
+      case "listening":
+      case "copywait":
+        return "listening";
+      case "thinking":
+        return "thinking";
+      case "reply":
+        return replyOk ? "success" : "error";
+      case "suggestion":
+      case "help":
+        return "suggestion";
+      case "ringing":
+        return "alarm";
+      case "translation":
+        return "success";
+      default: {
+        // Drowsy in the middle of the night.
+        const hour = new Date().getHours();
+        return hour >= 1 && hour < 5 ? "sleep" : "idle";
+      }
+    }
+  });
 
   let mode = $state<Mode>("idle");
   let request = $state("");
@@ -242,7 +303,7 @@
   let voiceError = $state("");
   let ringing = $state<Ringing | null>(null);
   let ringTimers: ReturnType<typeof setTimeout>[] = [];
-  let translation = $state<Translation | null>(null);
+  let card = $state<Card | null>(null);
   let drawerOpen = $state(false);
   let copied = $state(false);
   let translationTimer: ReturnType<typeof setTimeout> | undefined;
@@ -372,7 +433,7 @@
     if (mode === "suggestion") void invoke("answer_suggestion", { choice: "dismiss" });
     await closeSettings();
     await closeDrawer();
-    translation = null;
+    card = null;
     suggestion = null;
     if (stage !== "full") playQuickReveal();
     enterMode(source);
@@ -424,6 +485,11 @@
         await showTranslation(response.translation);
         return;
       }
+      if (response.card) {
+        const { title, text, original } = response.card;
+        await showCard({ label: title, chip: t.ai, text, original });
+        return;
+      }
       if (response.awaiting_copy) {
         await translateNextCopy();
         return;
@@ -472,8 +538,17 @@
     }
   }
 
-  async function showTranslation(next: Translation) {
-    translation = next;
+  function showTranslation(next: Translation) {
+    return showCard({
+      label: t.translation,
+      chip: `${next.from.toUpperCase()} → ${next.to.toUpperCase()}`,
+      text: next.translated,
+      original: next.original,
+    });
+  }
+
+  async function showCard(next: Card) {
+    card = next;
     copied = false;
     replyOk = true;
     mode = "translation";
@@ -585,9 +660,9 @@
   }
 
   async function copyTranslation() {
-    if (!translation) return;
+    if (!card) return;
     try {
-      await invoke("copy_text", { text: translation.translated });
+      await invoke("copy_text", { text: card.text });
       copied = true;
     } catch {
       copied = false;
@@ -727,6 +802,20 @@
     });
   }
 
+  async function toggleAi() {
+    settings = await invoke<AppSettings>("set_ai_enabled", { enabled: !settings.ai_enabled });
+    aiStatus = await invoke<AiStatus>("get_ai_status");
+  }
+
+  async function deleteAiFiles() {
+    aiStatus = await invoke<AiStatus>("delete_ai_files");
+  }
+
+  function gigabytes(bytes: number): string {
+    const value = (bytes / 1e9).toFixed(1);
+    return `${settings.language === "fr" ? value.replace(".", ",") : value} ${t.gb}`;
+  }
+
   async function toggleActivity() {
     settings = await invoke<AppSettings>("set_activity_enabled", {
       enabled: !settings.activity_enabled,
@@ -814,11 +903,21 @@
     settings = await invoke<AppSettings>("erase_memory");
   }
 
+  onMount(watchTheme);
+
   onMount(() => {
     void playInitialReveal();
     void getVersion().then((version) => (appVersion = version));
     void invoke<AppSettings>("get_settings").then((loaded) => {
       settings = loaded;
+    });
+    void invoke<AiStatus>("get_ai_status").then((status) => (aiStatus = status));
+    const unlistenAi = listen<AiStatus>("mimo://ai-status", (event) => {
+      aiStatus = event.payload;
+    });
+    // Changed elsewhere too (the tray menu's AI switch, "Personnaliser").
+    const unlistenSettings = listen<AppSettings>("mimo://settings-changed", (event) => {
+      settings = event.payload;
     });
 
     const unlistenReveal = listen("mimo://reveal", () => {
@@ -877,6 +976,8 @@
       void unlistenFocus.then((fn) => fn());
       void unlistenRinging.then((fn) => fn());
       void unlistenSuggestion.then((fn) => fn());
+      void unlistenAi.then((fn) => fn());
+      void unlistenSettings.then((fn) => fn());
       stopRinging();
       cancelIdleHide();
     };
@@ -919,7 +1020,7 @@
     mode = "idle";
     request = "";
     reply = "";
-    translation = null;
+    card = null;
     suggestion = null;
     showControls = true;
   }
@@ -964,7 +1065,11 @@
         out:fade={{ duration: 220, easing: cubicOut }}
       >
         <div class="status" class:shifted={showControls} class:hidden={mode !== "idle"}>
-          <span class="dot running"></span>
+          {#if settings.character_enabled}
+            <Character {mood} />
+          {:else}
+            <span class="dot running"></span>
+          {/if}
           <span class="label">Mimo</span>
         </div>
 
@@ -998,14 +1103,18 @@
 
         {#if mode !== "idle"}
           <div class="prompt" in:fade={{ duration: 220, delay: 80, easing: cubicOut }}>
-            <span
-              class="dot running"
-              class:listening={mode === "listening" || mode === "copywait"}
-              class:thinking={mode === "thinking"}
-              class:failed={mode === "reply" && !replyOk}
-              class:alarm={mode === "ringing"}
-              class:suggesting={mode === "suggestion"}
-            ></span>
+            {#if settings.character_enabled}
+              <Character {mood} />
+            {:else}
+              <span
+                class="dot running"
+                class:listening={mode === "listening" || mode === "copywait"}
+                class:thinking={mode === "thinking"}
+                class:failed={mode === "reply" && !replyOk}
+                class:alarm={mode === "ringing"}
+                class:suggesting={mode === "suggestion"}
+              ></span>
+            {/if}
             {#if mode === "input"}
               <input
                 class="prompt-input"
@@ -1020,7 +1129,7 @@
             {:else if mode === "listening"}
               <span class="label prompt-text">{t.listening}</span>
             {:else if mode === "translation"}
-              <span class="label prompt-text">{t.translation}</span>
+              <span class="label prompt-text">{card?.label ?? t.translation}</span>
             {:else if mode === "suggestion"}
               <span class="label prompt-text">{t.suggestion}</span>
             {:else if mode === "help"}
@@ -1039,15 +1148,15 @@
       </div>
 
       <div class="translation-panel" class:open={drawerOpen}>
-        {#if translation}
+        {#if card}
           <div class="translation-head">
-            <span class="lang-chip">{translation.from.toUpperCase()} → {translation.to.toUpperCase()}</span>
+            <span class="lang-chip">{card.chip}</span>
             <button class="copy-button" class:copied type="button" onclick={copyTranslation}>
               {copied ? t.copied : t.copy}
             </button>
           </div>
-          <p class="translation-text">{translation.translated}</p>
-          <p class="translation-original">{translation.original}</p>
+          <p class="translation-text">{card.text}</p>
+          {#if card.original}<p class="translation-original">{card.original}</p>{/if}
         {/if}
       </div>
 
@@ -1176,12 +1285,47 @@
             <span class="switch-knob"></span>
           </button>
         </div>
+        <div class="settings-row ai-row">
+          <span class="settings-label">
+            {t.ai}
+            {#if aiStatus.state === "downloading"}
+              <span class="ai-note" title="{gigabytes(aiStatus.done)} / {gigabytes(aiStatus.total)}">· {aiPercent} %</span>
+            {:else if aiStatus.state === "off" && !aiStatus.installed && aiStatus.size > 0}
+              <span class="ai-note">· {gigabytes(aiStatus.size)}</span>
+            {/if}
+          </span>
+          <div class="ai-controls">
+            {#if aiStatus.state === "off" && aiStatus.installed}
+              <button class="keycap" type="button" title={t.aiDeleteTitle} onclick={deleteAiFiles}>{t.aiDelete}</button>
+            {/if}
+            <button
+              class="switch"
+              class:on={settings.ai_enabled}
+              type="button"
+              role="switch"
+              aria-checked={settings.ai_enabled}
+              aria-label={t.ai}
+              onclick={toggleAi}
+            >
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+          {#if aiStatus.state === "downloading"}
+            <div class="ai-bar"><div class="ai-bar-fill" style="width: {aiPercent}%"></div></div>
+          {/if}
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">{t.customize}</span>
+          <button class="keycap" type="button" onclick={() => void invoke("open_customize_window")}>{t.open}</button>
+        </div>
         <div class="settings-row">
           <span class="settings-label">{t.myCommands}</span>
           <button class="keycap" type="button" onclick={() => void invoke("open_commands_window")}>{t.manage}</button>
         </div>
-        {#if shortcutError || shortcutNote || (settings.voice_wake_enabled && voiceError)}
-          <p class="settings-hint">{shortcutError || shortcutNote || voiceError}</p>
+        {#if shortcutError || shortcutNote || (settings.voice_wake_enabled && voiceError) || aiStatus.state === "error"}
+          <p class="settings-hint">
+            {shortcutError || shortcutNote || (settings.voice_wake_enabled && voiceError) || t.aiError}
+          </p>
         {/if}
         <div class="settings-footer">
           <button class="settings-action" type="button" onclick={handleEraseMemory}>{t.eraseMemory}</button>
@@ -1235,6 +1379,7 @@
        effect, so it needs to stay reasonably opaque. */
     background:
       linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.02) 38%),
+      linear-gradient(160deg, rgba(var(--accent-rgb), var(--tint)), rgba(var(--accent-rgb), 0) 80%),
       linear-gradient(160deg, rgba(46, 46, 54, 0.78), rgba(10, 10, 14, 0.88));
     backdrop-filter: blur(22px) saturate(165%);
     -webkit-backdrop-filter: blur(22px) saturate(165%);
@@ -1280,9 +1425,9 @@
   /* Grows downward to reveal .settings-panel. The window is resized to fit
      this *before* the class is added (see openSettings in the script), so
      the extra room already exists and this is a pure CSS-driven grow —
-     matches SETTINGS_PANEL_HEIGHT (357) + the base 44px in src-tauri/src/lib.rs. */
+     matches SETTINGS_PANEL_HEIGHT (419) + the base 44px in src-tauri/src/lib.rs. */
   .pill.full.settings-open {
-    height: 401px;
+    height: 463px;
     border-radius: 28px;
   }
 
@@ -1401,7 +1546,7 @@
     padding: 0;
     background: transparent;
     color: #f5f5f7;
-    caret-color: #32d74b;
+    caret-color: var(--accent);
     font-family:
       -apple-system,
       "SF Pro Display",
@@ -1620,8 +1765,8 @@
   }
 
   .suggestion-button.primary {
-    background: #0a84ff;
-    color: #fff;
+    background: var(--accent);
+    color: var(--on-accent);
   }
 
   .suggestion-button.primary:hover {
@@ -1648,8 +1793,8 @@
   }
 
   .dot.running.suggesting {
-    background: #0a84ff;
-    box-shadow: 0 0 10px rgba(10, 132, 255, 0.85);
+    background: var(--accent);
+    box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.85);
   }
 
   .translation-panel {
@@ -1697,8 +1842,8 @@
     border: none;
     border-radius: 999px;
     padding: 4px 11px;
-    background: rgba(10, 132, 255, 0.2);
-    color: #64b5ff;
+    background: rgba(var(--accent-rgb), 0.2);
+    color: var(--accent-text);
     font: inherit;
     font-size: 0.74rem;
     font-weight: 600;
@@ -1707,7 +1852,7 @@
   }
 
   .copy-button:hover {
-    background: rgba(10, 132, 255, 0.3);
+    background: rgba(var(--accent-rgb), 0.3);
   }
 
   .copy-button.copied {
@@ -1760,7 +1905,7 @@
   }
 
   .settings-panel.open {
-    flex-basis: 357px;
+    flex-basis: 419px;
     opacity: 1;
     pointer-events: auto;
   }
@@ -1770,6 +1915,40 @@
     align-items: center;
     justify-content: space-between;
     gap: 10px;
+  }
+
+  /* The download bar runs along the bottom of the "Local AI" row. */
+  .ai-row {
+    position: relative;
+  }
+
+  .ai-note {
+    color: rgba(245, 245, 247, 0.45);
+    font-weight: 400;
+  }
+
+  .ai-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .ai-bar {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -5px;
+    height: 3px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.1);
+    overflow: hidden;
+  }
+
+  .ai-bar-fill {
+    height: 100%;
+    border-radius: 999px;
+    background: var(--accent);
+    transition: width 0.25s ease;
   }
 
   .settings-row.dimmed {
@@ -1806,7 +1985,7 @@
   }
 
   .switch.on {
-    background: #32d74b;
+    background: var(--accent);
   }
 
   .switch-knob {
@@ -1850,7 +2029,7 @@
   }
 
   .keycap.capturing {
-    background: rgba(50, 215, 75, 0.22);
+    background: rgba(var(--accent-rgb), 0.24);
     color: #7ee891;
   }
 
@@ -1966,13 +2145,13 @@
   }
 
   .dot.running {
-    background: #32d74b;
-    box-shadow: 0 0 8px rgba(50, 215, 75, 0.7);
+    background: var(--accent);
+    box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.7);
   }
 
   .dot.listening {
-    background: #0a84ff;
-    box-shadow: 0 0 10px rgba(10, 132, 255, 0.8);
+    background: var(--accent);
+    box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.8);
     animation: dot-pulse 1.1s ease-in-out infinite;
   }
 

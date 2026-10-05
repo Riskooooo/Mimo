@@ -43,21 +43,32 @@ pub struct AskResponseDto {
     /// "J'ai besoin d'aide": the pill asks (in `reply`) whether it's an
     /// emergency or a question about Mimo, with a button for each.
     pub help: bool,
+    /// A longer text to show in a card under the bar (an AI answer, a
+    /// summary of copied text).
+    pub card: Option<Card>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Card {
+    pub title: String,
+    pub text: String,
+    /// What the text was made from (the copied text), shown below it.
+    pub original: Option<String>,
 }
 
 impl AskResponseDto {
     pub fn failed(reply: String) -> Self {
-        Self { ok: false, reply, answer: false, translation: None, awaiting_copy: false, help: false }
+        Self { ok: false, reply, answer: false, translation: None, awaiting_copy: false, help: false, card: None }
     }
 
     /// A successful answer to read (kept up longer by the pill).
     pub fn answer(reply: String) -> Self {
-        Self { ok: true, reply, answer: true, translation: None, awaiting_copy: false, help: false }
+        Self { ok: true, reply, answer: true, translation: None, awaiting_copy: false, help: false, card: None }
     }
 
     /// A successful action ("Opening YouTube…").
     pub fn done(reply: String) -> Self {
-        Self { ok: true, reply, answer: false, translation: None, awaiting_copy: false, help: false }
+        Self { ok: true, reply, answer: false, translation: None, awaiting_copy: false, help: false, card: None }
     }
 
     /// An answer that didn't work out, still worded for reading.

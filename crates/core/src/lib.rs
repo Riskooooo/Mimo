@@ -6,9 +6,11 @@
 //! The shell only ever talks to this crate through `mimo-commands`.
 
 pub mod activity;
+pub mod ai;
 pub mod apps;
 pub mod capture;
 pub mod chat;
+pub mod control;
 pub mod custom;
 pub mod engine;
 pub mod error;
@@ -16,6 +18,7 @@ pub mod info;
 pub mod intent;
 pub mod notifications;
 pub mod platforms;
+pub mod recall;
 pub mod reminders;
 pub mod settings;
 pub mod shortcut;
@@ -29,5 +32,5 @@ pub use error::CoreError;
 pub use apps::{AppCatalog, InstalledApp};
 pub use info::{Day, Lang, Question, WeatherReport};
 pub use intent::{voice_phrases, Intent};
-pub use settings::{validate_language, Settings, LANGUAGES};
+pub use settings::{validate_accent_color, validate_language, Settings, DEFAULT_ACCENT_COLOR, LANGUAGES};
 pub use shortcut::{validate_shortcut, DEFAULT_SUMMON_SHORTCUT};

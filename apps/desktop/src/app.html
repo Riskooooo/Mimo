@@ -10,6 +10,14 @@
       body {
         background: transparent;
       }
+      /* The default theme until the saved one loads (see src/lib/theme.ts). */
+      :root {
+        --accent: #0a84ff;
+        --accent-rgb: 10, 132, 255;
+        --on-accent: #ffffff;
+        --accent-text: #64b5ff;
+        --tint: 0;
+      }
     </style>
     %sveltekit.head%
   </head>

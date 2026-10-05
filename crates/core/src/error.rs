@@ -8,4 +8,6 @@ pub enum CoreError {
     InvalidShortcut(String),
     #[error("no voice model for language {0:?}")]
     UnsupportedLanguage(String),
+    #[error("invalid color: {0}")]
+    InvalidColor(String),
 }

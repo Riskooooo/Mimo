@@ -16,7 +16,7 @@ mod info;
 
 use std::sync::Mutex;
 
-pub use commands::{engine_status, execute, interpret, AskResponseDto, EngineStatusDto};
+pub use commands::{engine_status, execute, interpret, AskResponseDto, Card, EngineStatusDto};
 
 /// Builds the shared engine state for the shell to hand to `app.manage(...)`.
 ///

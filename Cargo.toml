@@ -7,10 +7,14 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Fabian"]
 license = "MIT"
+
+# Hashing the 2.5 GB AI model in a debug build would take minutes otherwise.
+[profile.dev.package.sha2]
+opt-level = 3
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

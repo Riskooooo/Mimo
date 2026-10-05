@@ -157,7 +157,7 @@ fn find_when(tokens: &[String]) -> Option<(When, std::ops::Range<usize>)> {
 
 /// "10 minutes", "dix minutes", "une heure", "1 h 30", "half an hour",
 /// "une demi heure", "un quart d'heure".
-fn duration(tokens: &[String], start: usize) -> Option<(u64, usize)> {
+pub(crate) fn duration(tokens: &[String], start: usize) -> Option<(u64, usize)> {
     let word = |i: usize| tokens.get(i).map(String::as_str);
     match (word(start), word(start + 1), word(start + 2)) {
         (Some("une" | "un"), Some("demi"), Some("heure")) => return Some((30 * 60, start + 3)),

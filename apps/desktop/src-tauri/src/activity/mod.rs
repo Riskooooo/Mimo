@@ -215,3 +215,31 @@ pub fn midnight(days_ago: i64) -> i64 {
         .map(|t| t.timestamp())
         .unwrap_or_else(|| Local::now().timestamp())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mimo_core::recall::{answer, last_stretch, Moment};
+    use mimo_core::Lang;
+
+    /// Answers "what was I doing" from the real `activity.db` (read-only):
+    /// `cargo test -p desktop print_recall -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn print_recall() {
+        let path = std::path::Path::new(&std::env::var("APPDATA").unwrap()).join("com.fabian.mimo").join("activity.db");
+        let db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).expect("activity.db");
+        let mut state = State { enabled: false, tracker: Tracker::new(5), db: Some(db), path: None, last_purge: None, last_seen: None };
+        let now = Local::now();
+        let unix = |at: chrono::NaiveDateTime| Local.from_local_datetime(&at).earliest().unwrap().timestamp();
+        let all = state.load(0, now.timestamp());
+        println!("{} sessions stored", all.len());
+        for moment in [Moment::Day { days_ago: 1 }, Moment::Day { days_ago: 0 }, Moment::At { days_ago: 1, hour: 17, minute: 0 }, Moment::Earlier] {
+            let span = moment.resolve(now.naive_local());
+            let (from, to) = (unix(span.from), unix(span.to));
+            println!("{}", answer(&state.load(from, to), from, to, span.point.map(unix), span.moment, Lang::Fr));
+        }
+        let (from, to) = last_stretch(&all, now.timestamp());
+        println!("last stretch: {} → {}", Local.timestamp_opt(from, 0).unwrap(), Local.timestamp_opt(to, 0).unwrap());
+    }
+}

@@ -866,7 +866,7 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arboard",
  "chrono",
@@ -877,6 +877,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "sysinfo",
  "tauri",
  "tauri-build",
@@ -884,6 +885,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-opener",
  "ureq",
+ "windows",
  "windows-capture",
 ]
 
@@ -2385,7 +2387,7 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "mimo-commands"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "mimo-core",
@@ -2398,7 +2400,7 @@ dependencies = [
 
 [[package]]
 name = "mimo-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "serde",
